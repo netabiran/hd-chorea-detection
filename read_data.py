@@ -16,14 +16,14 @@ SYNC_SHEET = "Sheet1"
 ACC_SAMPLE_RATE = 100  # Hz
 
 ACTIVITY_DICT = {
-    'walking': 1, 'moving (small steps)': 0, 'turning around': 0, 'turning ': 0, 'stepping': 0, 'stumbling': -9, 
+    'walking': 1, 'moving (small steps)': -9, 'turning around': 0, 'turning ': 0, 'stepping': -9, 'stumbling': 0, 
     'stepping to the side': 0, 'standing': 0, 'sitting': 0, 'sitting down': 0, 'standing clapping hands': 0, 
     'sitting clapping hands': 0, 'sit to stand': 0, 'sitting and writing': 0, 'sitting and drinking water': 0, 
     'standing up': 0, 'standing and clapping hands': 0, 'standing and putting arms crossed on the chest': 0,
     'standing with arms crossed on the chest': 0, 'standing and putting the arms down': 0, 
     'standing and putting the hands down': 0, 'stepping on a foam': 0, 'stepping off the foam': 0, 
     'bending over': 0, 'stepping up and down a step': 0, 'moving hands up': 0, 'clapping hands': 0, 
-    'moving hands down': 0, 'stumbling': 0, 'stepping over a step': 0, 'turning around': -9, 
+    'moving hands down': 0, 'stumbling': 0, 'stepping over a step': -9, 'stepping off a step': -9, 'turning around': -9, 
     'walking backwards': -9, 'going down stairs': -9, 'climbing up stairs': -9, 'stepping backward': -9, 
     'step up': -9, 'step down': 0, 'moving with chair': -9, 'going forward with chair': 0, 'going backward with chair': 0,
     '-9': -9
@@ -168,7 +168,7 @@ def parse_labels(timeline_csv_path):
                         first_frame = int(row[2])
                         last_frame = int(row[3])
                         activity_name = row[4]
-                        chorea_labels_by_frames.append((first_frame, last_frame, activity_name))
+                        labels_by_frames.append((first_frame, last_frame, activity_name))
                     except ValueError:
                         continue
                 if sections_counter == 3:
@@ -178,7 +178,7 @@ def parse_labels(timeline_csv_path):
                         first_frame = int(row[2])
                         last_frame = int(row[3])
                         activity_name = row[4]
-                        labels_by_frames.append((first_frame, last_frame, activity_name))
+                        chorea_labels_by_frames.append((first_frame, last_frame, activity_name))
                     except ValueError:
                         continue
     except Exception as e:
@@ -191,7 +191,7 @@ def parse_labels(timeline_csv_path):
 def map_labels_to_samples(labels, chorea_labels, source_rate, target_rate):
     """Maps frame-based labels to sample-based labels with the correct sample rate."""
     activity_mapping = {
-        "walking": 1, "moving (small steps)": 1, "turning_around": 0, "stepping": 0, "standing": 0, "sitting": 0,
+        "walking": 1, "moving (small steps)": 0, "turning_around": 0, "stepping": 0, "standing": 0, "sitting": 0,
         "clapping hands": 0, "stepping backwards": -9, "walking backward": -9, "stairs up": -9,
         "step up": -9, "climbing up stairs": -9, "going down stairs": -9, "-9": -9
     }

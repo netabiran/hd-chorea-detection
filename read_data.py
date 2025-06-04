@@ -115,8 +115,16 @@ def load_label_data(patient, source_sample_rate, target_sample_rate=ACC_SAMPLE_R
     for label_set in chorea_labels_by_frames:
         start_sample = int(np.round(label_set[0]) * (target_sample_rate / source_sample_rate))
         end_sample = int(np.round(label_set[1]) * (target_sample_rate / source_sample_rate))
-        level = -1 if label_set[2] in ['', 'hided', '-9'] else int(label_set[2])
-        chorea_labels[start_sample:end_sample] = level
+
+        if label_set[2] in ['', 'hided', '-9']:
+            level = -1
+        else:
+            try:
+                level = int(label_set[2])
+            except (ValueError, TypeError):
+                level = -1
+
+        chorea_labels[start_sample:end_sample + 1] = level
 
     return labels_array, chorea_labels
 

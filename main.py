@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
+preprocessing_mode = False
+
 curr_dir = os.getcwd()
 
 PROCESSED_DATA_DIR = os.path.join(curr_dir, 'data_ready')
@@ -30,82 +32,82 @@ WINDOW_SIZE = int(30*10)
 WINDOW_OVERLAP = int(30*5)  
 
 def main():
-    # win_data_all_sub = np.empty((0, 3, WINDOW_SIZE)) 
-    # win_labels_all_sub = win_subjects = win_chorea_all_sub = win_shift_all_sub = np.empty((0, WINDOW_SIZE))
-    # win_video_time_all_sub = np.empty((0,1))
-    # NumWin = []
+    if preprocessing_mode:
+        win_data_all_sub = np.empty((0, 3, WINDOW_SIZE)) 
+        win_labels_all_sub = win_subjects = win_chorea_all_sub = win_shift_all_sub = np.empty((0, WINDOW_SIZE))
+        win_video_time_all_sub = np.empty((0,1))
+        NumWin = []
 
-    # for file in os.listdir(RAW_DATA_AND_LABELS_DIR):
-    #     try:
-    #         data_file = np.load(os.path.join(RAW_DATA_AND_LABELS_DIR, file))
-    #     except:
-    #         print(f"Can't open the file {file}")
-    #         continue
+        for file in os.listdir(RAW_DATA_AND_LABELS_DIR):
+            try:
+                data_file = np.load(os.path.join(RAW_DATA_AND_LABELS_DIR, file))
+            except:
+                print(f"Can't open the file {file}")
+                continue
 
-    #     try:
-    #         acc_data = data_file['acc_data'].astype('float')
-    #     except:
-    #         try:
-    #             acc_data = data_file['acc_data']
-    #             def is_numeric(s):
-    #                 try:
-    #                     float(s)
-    #                     return True
-    #                 except ValueError:
-    #                     return False
-    #             numeric_mask = np.array([[is_numeric(cell) for cell in row] for row in acc_data])
-    #             acc_data[~numeric_mask] = np.nan
-    #             acc_data = acc_data.astype('float')
-    #             acc_data = acc_data[~np.isnan(acc_data).any(axis=1)]
-    #             if len(acc_data) == 0:
-    #                 continue
-    #         except:
-    #             print(f"Failed to process acc_data in {file}")
-    #             continue
+            try:
+                acc_data = data_file['acc_data'].astype('float')
+            except:
+                try:
+                    acc_data = data_file['acc_data']
+                    def is_numeric(s):
+                        try:
+                            float(s)
+                            return True
+                        except ValueError:
+                            return False
+                    numeric_mask = np.array([[is_numeric(cell) for cell in row] for row in acc_data])
+                    acc_data[~numeric_mask] = np.nan
+                    acc_data = acc_data.astype('float')
+                    acc_data = acc_data[~np.isnan(acc_data).any(axis=1)]
+                    if len(acc_data) == 0:
+                        continue
+                except:
+                    print(f"Failed to process acc_data in {file}")
+                    continue
 
-    #     labels = data_file.get('label_data', None)
-    #     chorea = data_file.get('chorea_labels', None)
-    #     video_time = data_file.get('time_data', None)
-    #     subject_name = file.split('.')[0]
+            labels = data_file.get('label_data', None)
+            chorea = data_file.get('chorea_labels', None)
+            video_time = data_file.get('time_data', None)
+            subject_name = file.split('.')[0]
 
-    #     acc_data = preprocessing.bandpass_filter(data=acc_data, low_cut=0.2, high_cut=15,
-    #                                              sampling_rate=SRC_SAMPLE_RATE, order=4)
+            acc_data = preprocessing.bandpass_filter(data=acc_data, low_cut=0.2, high_cut=15,
+                                                     sampling_rate=SRC_SAMPLE_RATE, order=4)
 
-    #     acc_data, labels, chorea, video_time = preprocessing.resample(
-    #         data=acc_data, labels=labels, chorea=chorea, video_time=video_time,
-    #         original_fs=SRC_SAMPLE_RATE, target_fs=30)
+            acc_data, labels, chorea, video_time = preprocessing.resample(
+                data=acc_data, labels=labels, chorea=chorea, video_time=video_time,
+                original_fs=SRC_SAMPLE_RATE, target_fs=30)
 
-    #     data, labels, chorea, video_time, shift, NumWinSub = preprocessing.data_windowing(
-    #         data=acc_data, labels=labels, chorea=chorea, video_time=video_time,
-    #         window_size=WINDOW_SIZE, window_overlap=WINDOW_OVERLAP,
-    #         std_th=STD_THRESH, model_type='segmentation', subject=subject_name)
+            data, labels, chorea, video_time, shift, NumWinSub = preprocessing.data_windowing(
+                data=acc_data, labels=labels, chorea=chorea, video_time=video_time,
+                window_size=WINDOW_SIZE, window_overlap=WINDOW_OVERLAP,
+                std_th=STD_THRESH, model_type='segmentation', subject=subject_name)
 
-    #     win_data_all_sub = np.append(win_data_all_sub, data, axis=0)
-    #     win_labels_all_sub = np.append(win_labels_all_sub, labels, axis=0)
-    #     win_chorea_all_sub = np.append(win_chorea_all_sub, chorea, axis=0)
-    #     win_shift_all_sub = np.append(win_shift_all_sub, shift, axis=0)
-    #     win_video_time_all_sub = np.append(win_video_time_all_sub, video_time, axis=0)
+            win_data_all_sub = np.append(win_data_all_sub, data, axis=0)
+            win_labels_all_sub = np.append(win_labels_all_sub, labels, axis=0)
+            win_chorea_all_sub = np.append(win_chorea_all_sub, chorea, axis=0)
+            win_shift_all_sub = np.append(win_shift_all_sub, shift, axis=0)
+            win_video_time_all_sub = np.append(win_video_time_all_sub, video_time, axis=0)
 
-    #     subject = np.tile(subject_name, (len(labels), 1)).reshape(-1, 1)
-    #     win_subjects = np.append(win_subjects, subject)
-    #     NumWin.append(NumWinSub)
+            subject = np.tile(subject_name, (len(labels), 1)).reshape(-1, 1)
+            win_subjects = np.append(win_subjects, subject)
+            NumWin.append(NumWinSub)
 
-    #     print(file, win_data_all_sub.shape)
+            print(file, win_data_all_sub.shape)
 
-    # # Save processed data
-    # res = {
-    #     'win_data_all_sub': win_data_all_sub,
-    #     'win_labels_all_sub': win_labels_all_sub,
-    #     'win_subjects': win_subjects,
-    #     'win_chorea_all_sub': win_chorea_all_sub,
-    #     'win_shift_all_sub': win_shift_all_sub,
-    #     'win_video_time_all_sub': win_video_time_all_sub
-    # }
+        # Save processed data
+        res = {
+            'win_data_all_sub': win_data_all_sub,
+            'win_labels_all_sub': win_labels_all_sub,
+            'win_subjects': win_subjects,
+            'win_chorea_all_sub': win_chorea_all_sub,
+            'win_shift_all_sub': win_shift_all_sub,
+            'win_video_time_all_sub': win_video_time_all_sub
+        }
 
-    # np.savez(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'), **res)
+        np.savez(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'), **res)
 
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("start loading input file")
     input_file = np.load(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'))

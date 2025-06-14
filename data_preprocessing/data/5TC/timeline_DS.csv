@@ -1,0 +1,96 @@
+T,,#6464ff
+P,False,78101,78569,far from the camera,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,79208,79869,far from the camera,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,80502,81197,far from the camera,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,81905,82563,far from the camera,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,83306,83945,far from the camera,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,85815,86487,hided,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,87079,87208,hided,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+P,False,89069,89129,hided,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x0000015907095788>
+T,,#6464ff
+P,True,70408,70409,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,70409,77606,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,77606,84986,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,84986,85683,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,85685,86995,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,86999,87088,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,87094,92187,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,167741,167900,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,167906,167960,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,167963,168036,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,168039,168381,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,168386,168743,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,168746,169020,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169023,169113,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169116,169251,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169253,169339,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169343,169804,,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169806,169866,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,169871,170559,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,170565,170642,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,170645,171132,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,171136,171196,siting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,171199,171232,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,171234,171386,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,171389,171449,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,171452,172459,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,172463,172555,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,172556,173081,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,173085,173168,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,173171,175034,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,175038,175151,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,175156,175827,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,175829,175909,sitting down,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,175910,177483,sitting,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,177486,177538,standing up,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,177543,180528,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,180532,181256,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,181259,182763,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,182768,183570,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,183573,185174,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,185180,186128,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,186131,187332,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,186188,186198,,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,187341,188304,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,188309,188746,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,188752,189153,walking,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+P,False,189159,189426,standing,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159126B3AC8>
+T,,#6464ff
+P,False,70408,70633,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,70635,73383,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,73387,78096,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,78102,78563,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,78577,79206,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,79214,79862,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,79871,80502,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,80508,81195,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,81197,81899,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,81901,82561,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,82565,83303,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,83308,83944,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,83950,85676,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,85682,86847,,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,86851,87077,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,87085,87212,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,87219,89068,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,89071,89129,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,89133,89783,,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,89789,90161,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,90170,92187,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,167746,167954,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,167961,169113,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,169116,169250,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,169253,169868,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,169871,170562,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,170567,171407,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,171411,172204,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,172209,173124,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,173129,175153,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,175159,175825,1,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,175828,177486,-9,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,177492,185175,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,185182,186121,1,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,186125,187333,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,187345,188386,1,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+P,False,188387,189420,0,#6464ff,<pyforms_gui.controls.control_event_timeline.events.track.Track object at 0x00000159070AB308>
+T,,#6464ff

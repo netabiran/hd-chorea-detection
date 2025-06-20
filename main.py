@@ -152,9 +152,7 @@ def main():
 
     # Stack windows
     win_acc_data = np.stack([left_wind, mid_wind, right_wind], axis=2).reshape(-1, 3, WINDOW_SIZE * 3)
-    win_chorea = np.where(mid_chorea == 0, 0,    # No chorea
-               np.where((mid_chorea > 0) & (mid_chorea <= 4), 1,  # Any chorea
-               mid_chorea))
+    win_chorea = mid_chorea
 
     # === Dataloader preparation ===
     class ChoreaDataset(Dataset):
@@ -198,7 +196,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     # === Model setup ===
-    model = get_sslnet(tag='v1.0.0', pretrained=True, num_classes=2, model_type='segmentation', padding_type='triple_wind')
+    model = get_sslnet(tag='v1.0.0', pretrained=True, num_classes=5, model_type='segmentation', padding_type='triple_wind')
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -209,7 +207,7 @@ def main():
     train_losses = []
     epoch_accuracies = []
 
-    for epoch in range(20):  
+    for epoch in range(5):  
         total_loss = 0
         correct, total = 0, 0
         for X_batch, y_batch, mask in train_loader:
@@ -224,7 +222,7 @@ def main():
             # Optional: compute training accuracy on valid mask
             with torch.no_grad():
                 logits = output.detach()
-                logits = logits.permute(0, 2, 1).contiguous().view(-1, 2)
+                logits = logits.permute(0, 2, 1).contiguous().view(-1, 5)
                 y_true = y_batch.view(-1)
                 mask_flat = mask.view(-1).bool()
                 preds = torch.argmax(logits, dim=1)
@@ -247,7 +245,7 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("hd-chorea-detection/loss_over_epochs_classification_new_loss_trial.png")
+    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/loss_over_epochs_classification_new_loss_trial.png")
     plt.show()
 
     # === Plot Accuracy over Epochs (optional) ===
@@ -259,7 +257,7 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("hd-chorea-detection/accuracy_over_epochs_classification_new_loss_trial.png")
+    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/accuracy_over_epochs_classification_new_loss_trial.png")
     plt.show()
 
     # === Evaluation ===
@@ -276,7 +274,7 @@ def main():
     all_preds = torch.cat(all_preds, dim=0).permute(0, 2, 1).contiguous()
     all_labels = torch.cat(all_labels, dim=0)
 
-    y_score = all_preds.view(-1, 2)
+    y_score = all_preds.view(-1, 5)
     y_true = all_labels.view(-1).long()
 
     valid_mask = y_true >= 0
@@ -288,22 +286,19 @@ def main():
 
     if len(unique_classes) > 1:
         # Binarize true labels
-        y_true_bin = label_binarize(y_true.numpy(), classes=[0, 1])
+        y_true_bin = label_binarize(y_true.numpy(), classes=[0, 1,2,3,4])
 
         # Get predictions
         y_pred = torch.argmax(y_score, dim=1).cpu().numpy()
-        y_true_np = y_true.numpy()
 
         # Compute metrics
-        auc = roc_auc_score(y_true_bin, y_pred, multi_class='ovr')
-        accuracy = accuracy_score(y_true_np, y_pred)
-        precision = precision_score(y_true_np, y_pred, zero_division=0)
-        recall = recall_score(y_true_np, y_pred, zero_division=0)
-        f1 = f1_score(y_true_np, y_pred, zero_division=0)
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
+        recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
+        f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
         # Build a clean single-line title with metrics
         title_str = (
-            f"AUC: {auc:.3f} | "
             f"Acc: {accuracy:.3f} | "
             f"Prec: {precision:.3f} | "
             f"Rec: {recall:.3f} | "
@@ -311,16 +306,16 @@ def main():
         )
 
         # Create Confusion Matrix
-        cm = confusion_matrix(y_true_np, y_pred, labels=[0, 1])
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1])
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3, 4])
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1, 2, 3, 4])
 
         # Plot
         fig, ax = plt.subplots(figsize=(6, 6))
         disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
-        ax.set_title(f"Confusion Matrix (Chorea 0–1)\n{title_str}", fontsize=12)
+        ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
 
         plt.tight_layout()
-        plt.savefig("hd-chorea-detection/confusion_matrix_new_loss_trial.png")
+        plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/confusion_matrix_5_classes.png")
         plt.show()
 
     else:

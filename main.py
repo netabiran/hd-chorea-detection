@@ -207,7 +207,7 @@ def main():
     train_losses = []
     epoch_accuracies = []
 
-    for epoch in range(5):  
+    for epoch in range(20):  
         total_loss = 0
         correct, total = 0, 0
         for X_batch, y_batch, mask in train_loader:
@@ -245,7 +245,7 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/loss_over_epochs_classification_new_loss_trial.png")
+    #plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/loss_over_epochs_classification_new_loss_trial.png")
     plt.show()
 
     # === Plot Accuracy over Epochs (optional) ===
@@ -257,27 +257,29 @@ def main():
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/accuracy_over_epochs_classification_new_loss_trial.png")
+    #plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/accuracy_over_epochs_classification_new_loss_trial.png")
     plt.show()
 
     # === Evaluation ===
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_masks = [], [], []
     with torch.no_grad():
-        for X_batch, y_batch, _ in test_loader:
+        for X_batch, y_batch, mask in test_loader:
             X_batch = X_batch.to(device)
             logits = model(X_batch).cpu()
             probs = F.softmax(logits, dim=1)
             all_preds.append(probs)
             all_labels.append(y_batch)
+            all_masks.append(mask)
 
     all_preds = torch.cat(all_preds, dim=0).permute(0, 2, 1).contiguous()
     all_labels = torch.cat(all_labels, dim=0)
+    all_masks = torch.cat(all_masks, dim=0).view(-1) 
+    valid_mask = all_masks.bool()  
 
     y_score = all_preds.view(-1, 5)
     y_true = all_labels.view(-1).long()
 
-    valid_mask = y_true >= 0
     y_score = y_score[valid_mask]
     y_true = y_true[valid_mask]
 
@@ -285,8 +287,6 @@ def main():
     print("Classes in test set:", unique_classes.tolist())
 
     if len(unique_classes) > 1:
-        # Binarize true labels
-        y_true_bin = label_binarize(y_true.numpy(), classes=[0, 1,2,3,4])
 
         # Get predictions
         y_pred = torch.argmax(y_score, dim=1).cpu().numpy()

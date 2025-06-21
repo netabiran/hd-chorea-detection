@@ -31,7 +31,7 @@ class SegModel(nn.Module):
         self.relu2 = nn.ReLU()
         
         self.conv_out1 = nn.Conv1d((factor + 1) * 64, 32, kernel_size=5, stride=1, padding=2)
-        self.conv_out2 = nn.Conv1d(32, 5, kernel_size=5, stride=1, padding=2)
+        self.conv_out2 = nn.Conv1d(32, 4, kernel_size=5, stride=1, padding=2)
         self.relu_out = nn.ReLU()
 
     def forward(self, x):

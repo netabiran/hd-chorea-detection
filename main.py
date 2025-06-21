@@ -126,17 +126,16 @@ def main():
     print("done loading input file")
 
     win_acc_data = input_file['win_data_all_sub']
-    win_acc_data = np.transpose(win_acc_data,[0,2,1])
+    win_acc_data = np.transpose(win_acc_data, [0, 2, 1])
     win_labels = input_file['win_labels_all_sub']
     win_chorea = input_file['win_chorea_all_sub']
     win_subjects = input_file['win_subjects']
     win_shift = input_file['win_shift_all_sub']
     win_shift = np.mean(win_shift, axis=-1)
 
-    # Filter valid middle windows
-    left_wind = win_acc_data[0:-2:2]
-    mid_wind = win_acc_data[1:-1:2]
-    right_wind = win_acc_data[2::2]
+    left = win_acc_data[0:-2:2]
+    mid = win_acc_data[1:-1:2]
+    right = win_acc_data[2::2]
     mid_labels = win_labels[1:-1:2]
     mid_chorea = win_chorea[1:-1:2]
 
@@ -145,14 +144,14 @@ def main():
     valid_chorea_mask = (mid_chorea >= 0).sum(axis=1) >= 2
     final_mask = walking_mask & valid_chorea_mask
 
-    left_wind = left_wind[final_mask]
-    mid_wind = mid_wind[final_mask]
-    right_wind = right_wind[final_mask]
+    left_wind = left[final_mask]
+    mid_wind = mid[final_mask]
+    right_wind = right[final_mask]
     mid_chorea = mid_chorea[final_mask]
 
+    win_chorea = mid_chorea
     # Stack windows
     win_acc_data = np.stack([left_wind, mid_wind, right_wind], axis=2).reshape(-1, 3, WINDOW_SIZE * 3)
-    win_chorea = mid_chorea
 
     # === Dataloader preparation ===
     class ChoreaDataset(Dataset):
@@ -165,20 +164,34 @@ def main():
         def __getitem__(self, idx):
             return self.X[idx], self.y[idx], self.mask[idx]
 
-    class MaskedCrossEntropyLoss(torch.nn.Module):
+    # class MaskedCrossEntropyLoss(torch.nn.Module):
+    #     def __init__(self):
+    #         super().__init__()
+
+    #     def forward(self, logits, labels, mask):
+    #         # Compute un-reduced loss per element
+    #         loss = F.cross_entropy(logits, labels, reduction='none')  # shape: [batch, time] or [N]
+            
+    #         # Apply the mask
+    #         masked_loss = loss * mask
+
+    #         # Normalize by number of valid elements
+    #         num_valid = mask.sum()
+    #         return masked_loss.sum() / (num_valid + 1e-5)
+
+    class CumulativeOrdinalLoss(torch.nn.Module):
         def __init__(self):
             super().__init__()
+            self.bce = torch.nn.BCEWithLogitsLoss(reduction='none')
 
         def forward(self, logits, labels, mask):
-            # Compute un-reduced loss per element
-            loss = F.cross_entropy(logits, labels, reduction='none')  # shape: [batch, time] or [N]
-            
-            # Apply the mask
-            masked_loss = loss * mask
-
-            # Normalize by number of valid elements
-            num_valid = mask.sum()
-            return masked_loss.sum() / (num_valid + 1e-5)
+            B, K, T = logits.shape
+            labels_bin = torch.zeros((B, K, T), device=logits.device)
+            for k in range(K):
+                labels_bin[:, k, :] = (labels >= (k + 1)).float()
+            loss = self.bce(logits, labels_bin)
+            loss = loss * mask.unsqueeze(1)
+            return loss.sum() / (mask.sum() * K + 1e-8)
 
     # Split randomly regardless of subject
     X_train, X_test, y_train, y_test = train_test_split(
@@ -187,29 +200,28 @@ def main():
 
     valid_train = (y_train >= 0).astype(float)
     valid_test = (y_test >= 0).astype(float)
+
     y_train = np.maximum(y_train, 0)
     y_test = np.maximum(y_test, 0)
 
-    train_dataset = ChoreaDataset(X_train, y_train, valid_train)
-    test_dataset = ChoreaDataset(X_test, y_test, valid_test)
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    train_loader = DataLoader(ChoreaDataset(X_train, y_train, valid_train), batch_size=64, shuffle=True)
+    test_loader = DataLoader(ChoreaDataset(X_test, y_test, valid_test), batch_size=64, shuffle=False)
 
     # === Model setup ===
     model = get_sslnet(tag='v1.0.0', pretrained=True, num_classes=5, model_type='segmentation', padding_type='triple_wind')
+    device = "cpu"
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = MaskedCrossEntropyLoss()
+    criterion = CumulativeOrdinalLoss()
 
     # === Training ===
     model.train()
     train_losses = []
     epoch_accuracies = []
 
-    for epoch in range(5):  
+    for epoch in range(20):  
         total_loss = 0
-        correct, total = 0, 0
         for X_batch, y_batch, mask in train_loader:
             X_batch, y_batch, mask = X_batch.to(device), y_batch.to(device).long(), mask.to(device)
             optimizer.zero_grad()
@@ -218,108 +230,52 @@ def main():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-
-            # Optional: compute training accuracy on valid mask
-            with torch.no_grad():
-                logits = output.detach()
-                logits = logits.permute(0, 2, 1).contiguous().view(-1, 5)
-                y_true = y_batch.view(-1)
-                mask_flat = mask.view(-1).bool()
-                preds = torch.argmax(logits, dim=1)
-                correct += (preds[mask_flat] == y_true[mask_flat]).sum().item()
-                total += mask_flat.sum().item()
-
-        avg_loss = total_loss / len(train_loader)
-        train_losses.append(avg_loss)
-        epoch_acc = correct / total if total > 0 else 0
-        epoch_accuracies.append(epoch_acc)
-
-        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}, Accuracy: {epoch_acc:.4f}")
-
-    # === Plot Loss over Epochs ===
-    plt.figure(figsize=(8, 4))
-    plt.plot(train_losses, label='Train Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Loss over Epochs')
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/loss_over_epochs_classification_new_loss_trial.png")
-    plt.show()
-
-    # === Plot Accuracy over Epochs (optional) ===
-    plt.figure(figsize=(8, 4))
-    plt.plot(epoch_accuracies, label='Train Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title('Accuracy over Epochs')
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/accuracy_over_epochs_classification_new_loss_trial.png")
-    plt.show()
+        print(f"Epoch {epoch + 1}, Loss: {total_loss / len(train_loader):.4f}")
 
     # === Evaluation ===
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_masks = [], [], []
     with torch.no_grad():
-        for X_batch, y_batch, _ in test_loader:
+        for X_batch, y_batch, mask in test_loader:
             X_batch = X_batch.to(device)
             logits = model(X_batch).cpu()
-            probs = F.softmax(logits, dim=1)
-            all_preds.append(probs)
+            probs = torch.sigmoid(logits)
+            pred = (probs > 0.5).sum(dim=1)  
+            all_preds.append(pred)
             all_labels.append(y_batch)
+            all_masks.append(mask)
 
-    all_preds = torch.cat(all_preds, dim=0).permute(0, 2, 1).contiguous()
-    all_labels = torch.cat(all_labels, dim=0)
+    y_pred = torch.cat(all_preds).view(-1).numpy()
+    y_true = torch.cat(all_labels).view(-1).numpy()
+    all_masks = torch.cat(all_masks, dim=0).view(-1)         # shape: [N * T]
+    valid_mask = all_masks.bool()                            # mask out invalid frames
 
-    y_score = all_preds.view(-1, 5)
-    y_true = all_labels.view(-1).long()
-
-    valid_mask = y_true >= 0
-    y_score = y_score[valid_mask]
+    y_pred = y_pred[valid_mask]
     y_true = y_true[valid_mask]
 
-    unique_classes = torch.unique(y_true)
-    print("Classes in test set:", unique_classes.tolist())
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, average='macro', zero_division=0)
+    rec = recall_score(y_true, y_pred, average='macro', zero_division=0)
+    f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
 
-    if len(unique_classes) > 1:
-        # Binarize true labels
-        y_true_bin = label_binarize(y_true.numpy(), classes=[0, 1,2,3,4])
+    print(f"Accuracy: {acc:.3f}, Precision: {prec:.3f}, Recall: {rec:.3f}, F1 Score: {f1:.3f}")
 
-        # Get predictions
-        y_pred = torch.argmax(y_score, dim=1).cpu().numpy()
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3, 4])
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1, 2, 3, 4])
+    fig, ax = plt.subplots(figsize=(6, 6))
+    disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
+    # Add detailed title
+    title_str = (
+        f"Accuracy: {acc:.3f} | "
+        f"Precision: {prec:.3f} | "
+        f"Recall: {rec:.3f} | "
+        f"F1 Score: {f1:.3f}"
+    )
+    ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
 
-        # Compute metrics
-        accuracy = accuracy_score(y_true, y_pred)
-        precision = precision_score(y_true, y_pred, average="macro", zero_division=0)
-        recall = recall_score(y_true, y_pred, average="macro", zero_division=0)
-        f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
-
-        # Build a clean single-line title with metrics
-        title_str = (
-            f"Acc: {accuracy:.3f} | "
-            f"Prec: {precision:.3f} | "
-            f"Rec: {recall:.3f} | "
-            f"F1: {f1:.3f}"
-        )
-
-        # Create Confusion Matrix
-        cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3, 4])
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1, 2, 3, 4])
-
-        # Plot
-        fig, ax = plt.subplots(figsize=(6, 6))
-        disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
-        ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
-
-        plt.tight_layout()
-        plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_5_epochs_new_loss/confusion_matrix_5_classes.png")
-        plt.show()
-
-    else:
-        print("AUC not computed: only one class in test set.")
+    plt.tight_layout()
+    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_cumulative_loss/conf_matrix.png")
+    plt.show()
 
 if __name__ == '__main__':
     main()

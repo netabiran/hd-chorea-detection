@@ -21,10 +21,11 @@ from sklearn.metrics import (
     roc_auc_score
 )
 from sklearn.preprocessing import label_binarize
+from sklearn.model_selection import GroupKFold
 
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
-preprocessing_mode = False
+preprocessing_mode = True
 
 curr_dir = os.getcwd()
 
@@ -118,8 +119,8 @@ def main():
 
         np.savez(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'), **res)
 
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = "cpu"
 
     print("start loading input file")
     input_file = np.load(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'))
@@ -148,6 +149,7 @@ def main():
     mid_wind = mid[final_mask]
     right_wind = right[final_mask]
     mid_chorea = mid_chorea[final_mask]
+    win_subjects = win_subjects[1:-1:2][final_mask]
 
     win_chorea = mid_chorea
     # Stack windows
@@ -192,78 +194,140 @@ def main():
             loss = self.bce(logits, labels_bin)
             loss = loss * mask.unsqueeze(1)
             return loss.sum() / (mask.sum() * K + 1e-8)
+        
+    # ------------------ Axis normalization ------------------
+    def normalize_axes(X):
+        """
+        X: [num_samples, 3, num_timesteps]
+        Returns X_rot: rotated axes where:
+        - first axis = main movement (PCA)
+        - second axis = orthogonal
+        - third axis = gravity aligned
+        """
+        X_rot = np.zeros_like(X)
+        for i in range(X.shape[0]):
+            window = X[i].T  # [timesteps, 3]
 
-    # Split randomly regardless of subject
-    X_train, X_test, y_train, y_test = train_test_split(
-        win_acc_data, win_chorea, test_size=0.2, random_state=42, shuffle=True
-    )
+            # 1. Gravity vector
+            g = window.mean(axis=0)
+            g = g / (np.linalg.norm(g) + 1e-8)
 
-    valid_train = (y_train >= 0).astype(float)
-    valid_test = (y_test >= 0).astype(float)
+            # 2. Remove gravity
+            window_no_g = window - g * np.dot(window, g[:, None])
 
-    y_train = np.maximum(y_train, 0)
-    y_test = np.maximum(y_test, 0)
+            # 3. PCA on remaining movement
+            cov = np.cov(window_no_g, rowvar=False)
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            order = np.argsort(eigvals)[::-1]
+            R = eigvecs[:, order]
 
-    train_loader = DataLoader(ChoreaDataset(X_train, y_train, valid_train), batch_size=64, shuffle=True)
-    test_loader = DataLoader(ChoreaDataset(X_test, y_test, valid_test), batch_size=64, shuffle=False)
+            # 4. Rotate window
+            X_rot[i] = (window @ R).T
+        return X_rot
 
-    # === Model setup ===
-    model = get_sslnet(tag='v1.0.0', pretrained=True, num_classes=5, model_type='segmentation', padding_type='triple_wind')
-    device = "cpu"
-    model.to(device)
+        # ------------------------------
+    # GroupKFold subject-wise CV
+    # ------------------------------
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = CumulativeOrdinalLoss()
+    # --- Axis normalization
+    win_acc_data = normalize_axes(win_acc_data)
 
-    # === Training ===
-    model.train()
-    train_losses = []
-    epoch_accuracies = []
+    subjects = np.array([str(s) for s in win_subjects.reshape(-1)])
+    n_splits = min(5, len(np.unique(subjects)))
+    gkf = GroupKFold(n_splits=n_splits)
 
-    for epoch in range(20):  
-        total_loss = 0
-        for X_batch, y_batch, mask in train_loader:
-            X_batch, y_batch, mask = X_batch.to(device), y_batch.to(device).long(), mask.to(device)
-            optimizer.zero_grad()
-            output = model(X_batch)
-            loss = criterion(output, y_batch, mask)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        print(f"Epoch {epoch + 1}, Loss: {total_loss / len(train_loader):.4f}")
+    fold_results = []
 
-    # === Evaluation ===
-    model.eval()
-    all_preds, all_labels, all_masks = [], [], []
-    with torch.no_grad():
-        for X_batch, y_batch, mask in test_loader:
-            X_batch = X_batch.to(device)
-            logits = model(X_batch).cpu()
-            probs = torch.sigmoid(logits)
-            pred = (probs > 0.5).sum(dim=1)  
-            all_preds.append(pred)
-            all_labels.append(y_batch)
-            all_masks.append(mask)
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=subjects)):
+        print(f"\n=== Fold {fold+1}/{n_splits} ===")
 
-    y_pred = torch.cat(all_preds).view(-1).numpy()
-    y_true = torch.cat(all_labels).view(-1).numpy()
-    all_masks = torch.cat(all_masks, dim=0).view(-1)         # shape: [N * T]
-    valid_mask = all_masks.bool()                            # mask out invalid frames
+        X_train, y_train = win_acc_data[train_idx], win_chorea[train_idx]
+        X_val, y_val = win_acc_data[val_idx], win_chorea[val_idx]
 
-    y_pred = y_pred[valid_mask]
-    y_true = y_true[valid_mask]
+        mask_train = (y_train >= 0).astype(float)
+        mask_val = (y_val >= 0).astype(float)
 
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred, average='macro', zero_division=0)
-    rec = recall_score(y_true, y_pred, average='macro', zero_division=0)
-    f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        y_train = np.maximum(y_train, 0)
+        y_val = np.maximum(y_val, 0)
 
-    print(f"Accuracy: {acc:.3f}, Precision: {prec:.3f}, Recall: {rec:.3f}, F1 Score: {f1:.3f}")
+        train_loader = DataLoader(ChoreaDataset(X_train, y_train, mask_train), batch_size=64, shuffle=True)
+        val_loader   = DataLoader(ChoreaDataset(X_val, y_val, mask_val), batch_size=64, shuffle=False)
 
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2, 3, 4])
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=[0, 1, 2, 3, 4])
-    fig, ax = plt.subplots(figsize=(6, 6))
+        # === Model setup (fresh each fold) ===
+        model = get_sslnet(tag='v1.0.0', pretrained=True,
+                           num_classes=5, model_type='segmentation',
+                           padding_type='triple_wind')
+        model.to(device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        criterion = CumulativeOrdinalLoss()
+
+        # === Training ===
+        model.train()
+        for epoch in range(20):
+            total_loss = 0
+            for X_batch, y_batch, mask in train_loader:
+                X_batch, y_batch, mask = X_batch.to(device), y_batch.to(device).long(), mask.to(device)
+                optimizer.zero_grad()
+                output = model(X_batch)
+                loss = criterion(output, y_batch, mask)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            print(f"Epoch {epoch + 1}, Loss: {total_loss / len(train_loader):.4f}")
+
+        # === Evaluation on validation fold ===
+        model.eval()
+        all_preds, all_labels, all_masks = [], [], []
+        with torch.no_grad():
+            for X_batch, y_batch, mask in val_loader:
+                X_batch = X_batch.to(device)
+                logits = model(X_batch).cpu()
+                probs = torch.sigmoid(logits)
+                pred = (probs > 0.5).sum(dim=1)
+                all_preds.append(pred)
+                all_labels.append(y_batch)
+                all_masks.append(mask)
+
+        y_pred = torch.cat(all_preds).view(-1).numpy()
+        y_true = torch.cat(all_labels).view(-1).numpy()
+        all_masks = torch.cat(all_masks, dim=0).view(-1)
+        valid_mask = all_masks.bool()
+
+        y_pred = y_pred[valid_mask]
+        y_true = y_true[valid_mask]
+
+        acc = accuracy_score(y_true, y_pred)
+        prec = precision_score(y_true, y_pred, average='macro', zero_division=0)
+        rec = recall_score(y_true, y_pred, average='macro', zero_division=0)
+        f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+
+        print(f"Fold {fold+1} → Acc: {acc:.3f}, Prec: {prec:.3f}, Rec: {rec:.3f}, F1: {f1:.3f}")
+        fold_results.append((acc, prec, rec, f1))
+
+    # === Average results across folds ===
+    avg_results = np.mean(fold_results, axis=0)
+    print(f"\nAverage across folds → Acc: {avg_results[0]:.3f}, Prec: {avg_results[1]:.3f}, "
+          f"Rec: {avg_results[2]:.3f}, F1: {avg_results[3]:.3f}")
+
+    labels = [0, 1, 2, 3, 4]
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+    # Add marginals (row and column sums)
+    cm_with_margins = np.zeros((cm.shape[0]+1, cm.shape[1]+1), dtype=int)
+    cm_with_margins[:-1, :-1] = cm
+    cm_with_margins[:-1, -1] = np.sum(cm, axis=1)        
+    cm_with_margins[-1, :-1] = np.sum(cm, axis=0)       
+    cm_with_margins[-1, -1] = np.sum(cm)                 
+
+    # Create new display labels with 'Total'
+    display_labels = labels + ['Total']
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 8))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm_with_margins, display_labels=display_labels)
     disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
+
     # Add detailed title
     title_str = (
         f"Accuracy: {acc:.3f} | "
@@ -274,7 +338,7 @@ def main():
     ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
 
     plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_cumulative_loss/conf_matrix.png")
+    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_new_axes/conf_matrix.png")
     plt.show()
 
 if __name__ == '__main__':

@@ -4,10 +4,11 @@ import torch.nn as nn
 WIN_SIZE = 300
 
 class SegModel(nn.Module):
-    def __init__(self, pretrained_model, multi_windows=True):
+    def __init__(self, pretrained_model, multi_windows=True, feat_dim=27):
         super(SegModel, self).__init__()
         self.multi_windows = multi_windows
         self.pretrained_model = pretrained_model
+        self.feat_dim = feat_dim
         
         factor = 3 if multi_windows else 1
         self.factor = factor
@@ -31,10 +32,15 @@ class SegModel(nn.Module):
         self.relu2 = nn.ReLU()
         
         self.conv_out1 = nn.Conv1d((factor + 1) * 64, 32, kernel_size=5, stride=1, padding=2)
-        self.conv_out2 = nn.Conv1d(32, 4, kernel_size=5, stride=1, padding=2)
+        self.conv_out2 = nn.Conv1d(32 + 32, 4, kernel_size=5, stride=1, padding=2)  # note: +32 for feature branch
         self.relu_out = nn.ReLU()
 
-    def forward(self, x):
+        # 🔹 New feature branch
+        self.feat_fc1 = nn.Linear(feat_dim, 64)
+        self.feat_fc2 = nn.Linear(64, 32)
+        self.relu_feat = nn.ReLU()
+
+    def forward(self, x, features=None):
         feature_extractor = self.pretrained_model.feature_extractor
         layer1_list, layer2_list, layer3_list, layer4_list, layer5_list = [], [], [], [], []
         
@@ -68,9 +74,16 @@ class SegModel(nn.Module):
         concat1 = torch.cat([layer1_out, conv2], dim=1)
 
         out = self.relu_out(self.conv_out1(concat1))
-        out = self.conv_out2(out)  
 
+        # 🔹 Inject engineered features
+        if features is not None:
+            f = self.relu_feat(self.feat_fc2(self.feat_fc1(features)))
+            f = f.unsqueeze(-1).expand(-1, f.size(1), out.size(-1))  # match temporal dim
+            out = torch.cat([out, f], dim=1)
+
+        out = self.conv_out2(out)  
         return out
+
     
     def get_layer_internal_result(self, layer, x):
         inter_res = [x]

@@ -25,7 +25,7 @@ from sklearn.model_selection import GroupKFold
 
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
-preprocessing_mode = True
+preprocessing_mode = False
 
 curr_dir = os.getcwd()
 
@@ -155,16 +155,75 @@ def main():
     # Stack windows
     win_acc_data = np.stack([left_wind, mid_wind, right_wind], axis=2).reshape(-1, 3, WINDOW_SIZE * 3)
 
+    from scipy.stats import skew, kurtosis, entropy
+    from scipy.fft import rfft, rfftfreq
+
+    def extract_features(acc_window, fs=30):
+        """
+        acc_window: np.array shape [3, WINDOW_SIZE]
+        fs: sampling frequency (Hz)
+        """
+        features = []
+
+        # --- Time domain ---
+        for axis in range(acc_window.shape[0]):
+            x = acc_window[axis]
+
+            # mean, std
+            features.append(x.mean())
+            features.append(x.std())
+
+            # velocity and jerk
+            v = np.diff(x, n=1, prepend=x[0])
+            j = np.diff(v, n=1, prepend=v[0])
+            features.append(v.mean())
+            features.append(v.std())
+            features.append(j.mean())
+            features.append(j.std())
+
+        # --- Frequency domain ---
+        for axis in range(acc_window.shape[0]):
+            x = acc_window[axis]
+            X = np.fft.rfft(x)
+            freqs = np.fft.rfftfreq(len(x), 1/fs)
+            psd = np.abs(X)**2
+
+            # power in bands
+            bands = [(0.5, 3), (3, 7), (7, 12)]
+            for low, high in bands:
+                mask = (freqs >= low) & (freqs < high)
+                band_power = psd[mask].mean() if np.any(mask) else 0
+                features.append(band_power)
+
+        return np.array(features)
+
+
+    # --- Apply feature extraction to all windows ---
+    feature_list = [extract_features(win_acc_data[i]) for i in range(win_acc_data.shape[0])]
+    window_features = np.stack(feature_list)  # shape: [num_windows, num_features]
+    print("Window features shape:", window_features.shape)
+
+
     # === Dataloader preparation ===
     class ChoreaDataset(Dataset):
-        def __init__(self, X, y, mask):
+        def __init__(self, X, y, mask, features=None):
             self.X = torch.tensor(X, dtype=torch.float32)
             self.y = torch.tensor(y, dtype=torch.float32)
             self.mask = torch.tensor(mask, dtype=torch.float32)
+            if features is not None:
+                self.features = torch.tensor(features, dtype=torch.float32)
+            else:
+                self.features = None
+
         def __len__(self):
             return self.X.shape[0]
+
         def __getitem__(self, idx):
-            return self.X[idx], self.y[idx], self.mask[idx]
+            if self.features is not None:
+                return self.X[idx], self.y[idx], self.mask[idx], self.features[idx]
+            else:
+                return self.X[idx], self.y[idx], self.mask[idx]
+
 
     # class MaskedCrossEntropyLoss(torch.nn.Module):
     #     def __init__(self):
@@ -250,8 +309,19 @@ def main():
         y_train = np.maximum(y_train, 0)
         y_val = np.maximum(y_val, 0)
 
-        train_loader = DataLoader(ChoreaDataset(X_train, y_train, mask_train), batch_size=64, shuffle=True)
-        val_loader   = DataLoader(ChoreaDataset(X_val, y_val, mask_val), batch_size=64, shuffle=False)
+        # Select features corresponding to this fold
+        feats_train = window_features[train_idx]
+        feats_val = window_features[val_idx]
+
+        # Update DataLoaders to include features
+        train_loader = DataLoader(
+            ChoreaDataset(X_train, y_train, mask_train, features=feats_train),
+            batch_size=64, shuffle=True
+        )
+        val_loader = DataLoader(
+            ChoreaDataset(X_val, y_val, mask_val, features=feats_val),
+            batch_size=64, shuffle=False
+        )
 
         # === Model setup (fresh each fold) ===
         model = get_sslnet(tag='v1.0.0', pretrained=True,
@@ -266,10 +336,10 @@ def main():
         model.train()
         for epoch in range(20):
             total_loss = 0
-            for X_batch, y_batch, mask in train_loader:
-                X_batch, y_batch, mask = X_batch.to(device), y_batch.to(device).long(), mask.to(device)
+            for X_batch, y_batch, mask, feats in train_loader:
+                X_batch, y_batch, mask, feats = X_batch.to(device), y_batch.to(device).long(), mask.to(device), feats.to(device)    
                 optimizer.zero_grad()
-                output = model(X_batch)
+                output = model(X_batch, feats)
                 loss = criterion(output, y_batch, mask)
                 loss.backward()
                 optimizer.step()
@@ -280,9 +350,10 @@ def main():
         model.eval()
         all_preds, all_labels, all_masks = [], [], []
         with torch.no_grad():
-            for X_batch, y_batch, mask in val_loader:
+            for X_batch, y_batch, mask, feats in val_loader:
                 X_batch = X_batch.to(device)
-                logits = model(X_batch).cpu()
+                feats = feats.to(device)
+                logits = model(X_batch, feats).cpu()
                 probs = torch.sigmoid(logits)
                 pred = (probs > 0.5).sum(dim=1)
                 all_preds.append(pred)
@@ -338,7 +409,7 @@ def main():
     ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
 
     plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_new_axes/conf_matrix.png")
+    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_new_axes/conf_matrix_new_feature_engineering.png")
     plt.show()
 
 if __name__ == '__main__':

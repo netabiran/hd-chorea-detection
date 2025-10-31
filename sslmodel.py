@@ -236,12 +236,12 @@ def get_sslnet(tag='v1.0.0', pretrained=False, num_classes=2, model_type='segmen
     #     sslnet: nn.Module = torch.hub.load(repo, 'harnet10', class_num=5, pretrained=True)
     #     return sslnet
     
-    sslnet: nn.Module = torch.hub.load(repo_path, 'harnet10', trust_repo=True, source=source, class_num=num_classes,
+    sslnet: nn.Module = torch.hub.load(repo_path, 'harnet10', trust_repo=True, source=source, class_num=5,
                                        pretrained=pretrained, verbose=verbose)
     if model_type in ['classification', 'vanila']:
         return sslnet
     if model_type=='segmentation':
-        seg_model = segmentation_model.SegModel(sslnet, multi_windows=padding_type=='triple_wind', feat_dim=feat_dim)
+        seg_model = segmentation_model.SegModel(sslnet, multi_windows=padding_type=='triple_wind', feat_dim=feat_dim, num_classes=num_classes)
         return seg_model
 
 

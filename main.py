@@ -27,6 +27,7 @@ RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/
 
 preprocessing_mode = False
 use_features = False
+use_ordinal_loss = True  # True: ordinal loss (4 outputs), False: masked cross-entropy (5 outputs)
 
 curr_dir = os.getcwd()
 
@@ -297,6 +298,20 @@ def main():
     gkf = GroupKFold(n_splits=n_splits)
 
     fold_results = []
+    
+    # Determine number of classes and loss type based on configuration
+    if use_ordinal_loss:
+        num_classes = 4  # Ordinal loss: 4 outputs for 5 levels (0-4)
+        loss_name = "Ordinal"
+        print(f"\n{'='*60}")
+        print(f"Using Cumulative Ordinal Loss with {num_classes} outputs")
+        print(f"{'='*60}")
+    else:
+        num_classes = 5  # Masked CE: 5 outputs (one per class)
+        loss_name = "MaskedCE"
+        print(f"\n{'='*60}")
+        print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs")
+        print(f"{'='*60}")
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=groups)):
         print(f"\n=== Fold {fold+1}/{n_splits} ===")
@@ -325,12 +340,17 @@ def main():
 
         # === Model setup (fresh each fold) ===
         model = get_sslnet(tag='v1.0.0', pretrained=True,
-                           num_classes=5, model_type='segmentation',
+                           num_classes=num_classes, model_type='segmentation',
                            padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
         model.to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        criterion = CumulativeOrdinalLoss()
+        
+        # Select loss function based on configuration
+        if use_ordinal_loss:
+            criterion = CumulativeOrdinalLoss()
+        else:
+            criterion = MaskedCrossEntropyLoss()
 
         # === Training ===
         model.train()
@@ -366,10 +386,17 @@ def main():
                     feats = None
                 X_batch = X_batch.to(device)
                 logits = model(X_batch, feats).cpu()
-                # probs = F.softmax(logits, dim=1)
-                # pred = probs.argmax(dim=1)
-                probs = torch.sigmoid(logits)
-                pred = (probs > 0.5).sum(dim=1)
+                
+                # Different prediction methods based on loss type
+                if use_ordinal_loss:
+                    # Ordinal loss: use sigmoid and count thresholds
+                    probs = torch.sigmoid(logits)
+                    pred = (probs > 0.5).sum(dim=1)
+                else:
+                    # Masked CE: use softmax and argmax
+                    probs = F.softmax(logits, dim=1)
+                    pred = probs.argmax(dim=1)
+                
                 all_preds.append(pred)
                 all_labels.append(y_batch)
                 all_masks.append(mask)
@@ -417,10 +444,10 @@ def main():
             f"Recall: {rec:.3f} | "
             f"F1: {f1:.3f}"
         )
-        ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
+        ax.set_title(f"Confusion Matrix (Chorea 0–4) - {loss_name} Loss\n{title_str}", fontsize=12)
 
         plt.tight_layout()
-        plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/segmentation_comparison/conf_matrix_initial_loss.png")
+        plt.savefig(f"/home/netabiran/hd-chorea-detection/figures_output/segmentation_comparison/conf_matrix_{loss_name}_loss.png")
         plt.show()
 
 if __name__ == '__main__':

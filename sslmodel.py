@@ -200,7 +200,7 @@ class EarlyStopping:
         self.val_loss_min = val_loss
 
 
-def get_sslnet(tag='v1.0.0', pretrained=False, num_classes=2, model_type='segmentation',padding_type='no_padding'):
+def get_sslnet(tag='v1.0.0', pretrained=False, num_classes=2, model_type='segmentation',padding_type='no_padding', feat_dim=0):
     """
     Load and return the Self Supervised Learning (SSL) model from pytorch hub.
 
@@ -241,7 +241,7 @@ def get_sslnet(tag='v1.0.0', pretrained=False, num_classes=2, model_type='segmen
     if model_type in ['classification', 'vanila']:
         return sslnet
     if model_type=='segmentation':
-        seg_model = segmentation_model.SegModel(sslnet, multi_windows=padding_type=='triple_wind')
+        seg_model = segmentation_model.SegModel(sslnet, multi_windows=padding_type=='triple_wind', feat_dim=feat_dim)
         return seg_model
 
 

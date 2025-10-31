@@ -26,6 +26,7 @@ from sklearn.model_selection import GroupKFold
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
 preprocessing_mode = False
+use_features = False
 
 curr_dir = os.getcwd()
 
@@ -199,10 +200,12 @@ def main():
 
 
     # --- Apply feature extraction to all windows ---
-    feature_list = [extract_features(win_acc_data[i]) for i in range(win_acc_data.shape[0])]
-    window_features = np.stack(feature_list)  # shape: [num_windows, num_features]
-    print("Window features shape:", window_features.shape)
-
+    if use_features:
+        feature_list = [extract_features(win_acc_data[i]) for i in range(win_acc_data.shape[0])]
+        window_features = np.stack(feature_list)  # shape: [num_windows, num_features]
+        print("Window features shape:", window_features.shape)
+    else:
+        window_features = None  
 
     # === Dataloader preparation ===
     class ChoreaDataset(Dataset):
@@ -225,20 +228,14 @@ def main():
                 return self.X[idx], self.y[idx], self.mask[idx]
 
 
-    # class MaskedCrossEntropyLoss(torch.nn.Module):
-    #     def __init__(self):
-    #         super().__init__()
-
-    #     def forward(self, logits, labels, mask):
-    #         # Compute un-reduced loss per element
-    #         loss = F.cross_entropy(logits, labels, reduction='none')  # shape: [batch, time] or [N]
-            
-    #         # Apply the mask
-    #         masked_loss = loss * mask
-
-    #         # Normalize by number of valid elements
-    #         num_valid = mask.sum()
-    #         return masked_loss.sum() / (num_valid + 1e-5)
+    class MaskedCrossEntropyLoss(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.ce = torch.nn.CrossEntropyLoss(reduction='none')
+            def forward(self, input, target, mask):
+                loss = self.ce(input, target)
+                masked_loss = loss * mask
+                return masked_loss.sum() / (mask.sum() + 1e-6)
 
     class CumulativeOrdinalLoss(torch.nn.Module):
         def __init__(self):
@@ -292,12 +289,16 @@ def main():
     win_acc_data = normalize_axes(win_acc_data)
 
     subjects = np.array([str(s) for s in win_subjects.reshape(-1)])
-    n_splits = min(5, len(np.unique(subjects)))
+    unique_subjects = np.unique(subjects)
+    unique_subjects.sort()  # Ensure deterministic order
+    subject_to_idx = {subj: i for i, subj in enumerate(unique_subjects)}
+    groups = np.array([subject_to_idx[s] for s in subjects])
+    n_splits = min(5, len(unique_subjects))
     gkf = GroupKFold(n_splits=n_splits)
 
     fold_results = []
 
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=subjects)):
+    for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=groups)):
         print(f"\n=== Fold {fold+1}/{n_splits} ===")
 
         X_train, y_train = win_acc_data[train_idx], win_chorea[train_idx]
@@ -309,9 +310,8 @@ def main():
         y_train = np.maximum(y_train, 0)
         y_val = np.maximum(y_val, 0)
 
-        # Select features corresponding to this fold
-        feats_train = window_features[train_idx]
-        feats_val = window_features[val_idx]
+        feats_train = window_features[train_idx] if window_features is not None else None
+        feats_val = window_features[val_idx] if window_features is not None else None
 
         # Update DataLoaders to include features
         train_loader = DataLoader(
@@ -326,7 +326,7 @@ def main():
         # === Model setup (fresh each fold) ===
         model = get_sslnet(tag='v1.0.0', pretrained=True,
                            num_classes=5, model_type='segmentation',
-                           padding_type='triple_wind')
+                           padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
         model.to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -336,8 +336,15 @@ def main():
         model.train()
         for epoch in range(20):
             total_loss = 0
-            for X_batch, y_batch, mask, feats in train_loader:
-                X_batch, y_batch, mask, feats = X_batch.to(device), y_batch.to(device).long(), mask.to(device), feats.to(device)    
+            for batch in train_loader:
+                if use_features:
+                    X_batch, y_batch, mask, feats = batch
+                    feats = feats.to(device)
+                else:
+                    X_batch, y_batch, mask = batch
+                    feats = None
+                    
+                X_batch, y_batch, mask = X_batch.to(device), y_batch.to(device).long(), mask.to(device)
                 optimizer.zero_grad()
                 output = model(X_batch, feats)
                 loss = criterion(output, y_batch, mask)
@@ -348,17 +355,25 @@ def main():
 
         # === Evaluation on validation fold ===
         model.eval()
-        all_preds, all_labels, all_masks = [], [], []
+        all_preds, all_labels, all_masks, all_probs = [], [], [], []
         with torch.no_grad():
-            for X_batch, y_batch, mask, feats in val_loader:
+            for batch in val_loader:
+                if use_features:
+                    X_batch, y_batch, mask, feats = batch
+                    feats = feats.to(device)
+                else:
+                    X_batch, y_batch, mask = batch
+                    feats = None
                 X_batch = X_batch.to(device)
-                feats = feats.to(device)
                 logits = model(X_batch, feats).cpu()
+                # probs = F.softmax(logits, dim=1)
+                # pred = probs.argmax(dim=1)
                 probs = torch.sigmoid(logits)
                 pred = (probs > 0.5).sum(dim=1)
                 all_preds.append(pred)
                 all_labels.append(y_batch)
                 all_masks.append(mask)
+                all_probs.append(probs)
 
         y_pred = torch.cat(all_preds).view(-1).numpy()
         y_true = torch.cat(all_labels).view(-1).numpy()
@@ -376,41 +391,37 @@ def main():
         print(f"Fold {fold+1} → Acc: {acc:.3f}, Prec: {prec:.3f}, Rec: {rec:.3f}, F1: {f1:.3f}")
         fold_results.append((acc, prec, rec, f1))
 
-    # === Average results across folds ===
-    avg_results = np.mean(fold_results, axis=0)
-    print(f"\nAverage across folds → Acc: {avg_results[0]:.3f}, Prec: {avg_results[1]:.3f}, "
-          f"Rec: {avg_results[2]:.3f}, F1: {avg_results[3]:.3f}")
+        # === Confusion Matrix ===
+        labels = [0, 1, 2, 3, 4]
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
 
-    labels = [0, 1, 2, 3, 4]
-    cm = confusion_matrix(y_true, y_pred, labels=labels)
+        # Add marginals (row and column sums)
+        cm_with_margins = np.zeros((cm.shape[0] + 1, cm.shape[1] + 1), dtype=int)
+        cm_with_margins[:-1, :-1] = cm
+        cm_with_margins[:-1, -1] = np.sum(cm, axis=1)
+        cm_with_margins[-1, :-1] = np.sum(cm, axis=0)
+        cm_with_margins[-1, -1] = np.sum(cm)
 
-    # Add marginals (row and column sums)
-    cm_with_margins = np.zeros((cm.shape[0]+1, cm.shape[1]+1), dtype=int)
-    cm_with_margins[:-1, :-1] = cm
-    cm_with_margins[:-1, -1] = np.sum(cm, axis=1)        
-    cm_with_margins[-1, :-1] = np.sum(cm, axis=0)       
-    cm_with_margins[-1, -1] = np.sum(cm)                 
+        # Create new display labels with 'Total'
+        display_labels = labels + ['Total']
 
-    # Create new display labels with 'Total'
-    display_labels = labels + ['Total']
+        # Plot
+        fig, ax = plt.subplots(figsize=(8, 8))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm_with_margins, display_labels=display_labels)
+        disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
 
-    # Plot
-    fig, ax = plt.subplots(figsize=(8, 8))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm_with_margins, display_labels=display_labels)
-    disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
+        # Add detailed title (including AUC)
+        title_str = (
+            f"Accuracy: {acc:.3f} | "
+            f"Precision: {prec:.3f} | "
+            f"Recall: {rec:.3f} | "
+            f"F1: {f1:.3f}"
+        )
+        ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
 
-    # Add detailed title
-    title_str = (
-        f"Accuracy: {acc:.3f} | "
-        f"Precision: {prec:.3f} | "
-        f"Recall: {rec:.3f} | "
-        f"F1 Score: {f1:.3f}"
-    )
-    ax.set_title(f"Confusion Matrix (Chorea 0–4)\n{title_str}", fontsize=12)
-
-    plt.tight_layout()
-    plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/multiclass_new_axes/conf_matrix_new_feature_engineering.png")
-    plt.show()
+        plt.tight_layout()
+        plt.savefig("/home/netabiran/hd-chorea-detection/figures_output/segmentation_comparison/conf_matrix_initial_loss.png")
+        plt.show()
 
 if __name__ == '__main__':
     main()

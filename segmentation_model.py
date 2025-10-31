@@ -4,7 +4,7 @@ import torch.nn as nn
 WIN_SIZE = 300
 
 class SegModel(nn.Module):
-    def __init__(self, pretrained_model, multi_windows=True, feat_dim=27):
+    def __init__(self, pretrained_model, multi_windows=True, feat_dim=0):
         super(SegModel, self).__init__()
         self.multi_windows = multi_windows
         self.pretrained_model = pretrained_model
@@ -32,13 +32,14 @@ class SegModel(nn.Module):
         self.relu2 = nn.ReLU()
         
         self.conv_out1 = nn.Conv1d((factor + 1) * 64, 32, kernel_size=5, stride=1, padding=2)
-        self.conv_out2 = nn.Conv1d(32 + 32, 4, kernel_size=5, stride=1, padding=2)  # note: +32 for feature branch
+        self.conv_out2 = nn.Conv1d(64 if feat_dim else 32, 4, kernel_size=5, stride=1, padding=2)
         self.relu_out = nn.ReLU()
 
-        # 🔹 New feature branch
-        self.feat_fc1 = nn.Linear(feat_dim, 64)
-        self.feat_fc2 = nn.Linear(64, 32)
-        self.relu_feat = nn.ReLU()
+        # Only create feature layers if feat_dim > 0
+        if feat_dim > 0:
+            self.feat_fc1 = nn.Linear(feat_dim, 64)
+            self.feat_fc2 = nn.Linear(64, 32)
+            self.relu_feat = nn.ReLU()
 
     def forward(self, x, features=None):
         feature_extractor = self.pretrained_model.feature_extractor

@@ -31,7 +31,7 @@ for subj in unique_subjects:
     subj_mask = (subjects_walking == subj)
     subj_chorea_windows = chorea_walking[subj_mask]  # (num_windows, window_size)
     
-    # Count windows with at least 100 valid chorea samples (>=0)
+    # Count windows with at least 1 valid chorea samples (>=0)
     count_valid = np.sum(np.sum(subj_chorea_windows >= 0, axis=1) >= 1)
     subject_valid_window_counts.append((subj, count_valid))
 

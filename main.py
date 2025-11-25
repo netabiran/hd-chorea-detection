@@ -26,8 +26,11 @@ from sklearn.model_selection import GroupKFold
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
 preprocessing_mode = False
-use_features = False
-use_ordinal_loss = True  # True: ordinal loss (4 outputs), False: masked cross-entropy (5 outputs)
+use_features = True
+use_ordinal_loss = True  # True: ordinal loss (2 outputs for 3 classes), False: masked cross-entropy (3 outputs)
+use_ssl_encoder = False  # True: load SSL-trained encoder if available, False: use original pretrained
+use_class_weights = True  # True: use class weights to handle imbalanced data, False: no weighting
+use_focal_loss = False  # True: use focal loss (only for masked CE), False: standard loss
 
 curr_dir = os.getcwd()
 
@@ -36,6 +39,8 @@ os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
 OUTPUT_DIR = os.path.join(curr_dir, 'model_outputs')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+SSL_OUTPUT_DIR = os.path.join(curr_dir, 'ssl_outputs')
 
 VIZUALIZE_DIR = os.path.join(curr_dir, 'model_outputs', 'results_visualization')
 os.makedirs(VIZUALIZE_DIR, exist_ok=True)
@@ -126,6 +131,7 @@ def main():
 
     print("start loading input file")
     input_file = np.load(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'))
+    # input_file = np.load(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model_hd_only_segmentation_triple_wind_no_shift.npz'))
     print("done loading input file")
 
     win_acc_data = input_file['win_data_all_sub']
@@ -146,6 +152,16 @@ def main():
     walking_mask = (mid_labels > 0).sum(axis=1) > 0
     valid_chorea_mask = (mid_chorea >= 0).sum(axis=1) >= 2
     final_mask = walking_mask & valid_chorea_mask
+    
+    print(f"\n{'='*60}")
+    print(f"Data Filtering Statistics:")
+    print(f"{'='*60}")
+    print(f"Total windows available:        {len(mid)}")
+    print(f"Windows with walking:           {walking_mask.sum()}")
+    print(f"Windows with valid chorea:      {valid_chorea_mask.sum()}")
+    print(f"Windows kept (both criteria):   {final_mask.sum()}")
+    print(f"Filtering ratio:                {final_mask.sum()/len(mid)*100:.1f}%")
+    print(f"{'='*60}\n")
 
     left_wind = left[final_mask]
     mid_wind = mid[final_mask]
@@ -154,6 +170,30 @@ def main():
     win_subjects = win_subjects[1:-1:2][final_mask]
 
     win_chorea = mid_chorea
+    
+    # Remap chorea labels to 3 classes: 0->0, 1,2->1, 3,4->2
+    print(f"\n{'='*60}")
+    print(f"Remapping Chorea Labels to 3 Classes:")
+    print(f"{'='*60}")
+    print(f"Original label distribution:")
+    for label in range(5):
+        count = (win_chorea == label).sum()
+        print(f"  Label {label}: {count} samples")
+    
+    # Apply remapping
+    win_chorea_remapped = win_chorea.copy()
+    win_chorea_remapped[win_chorea == 1] = 1
+    win_chorea_remapped[win_chorea == 2] = 1
+    win_chorea_remapped[win_chorea == 3] = 2
+    win_chorea_remapped[win_chorea == 4] = 2
+    win_chorea = win_chorea_remapped
+    
+    print(f"\nRemapped label distribution:")
+    for label in range(3):
+        count = (win_chorea == label).sum()
+        print(f"  Label {label}: {count} samples")
+    print(f"{'='*60}\n")
+    
     # Stack windows
     win_acc_data = np.stack([left_wind, mid_wind, right_wind], axis=2).reshape(-1, 3, WINDOW_SIZE * 3)
 
@@ -230,18 +270,68 @@ def main():
 
 
     class MaskedCrossEntropyLoss(torch.nn.Module):
-            def __init__(self):
+            def __init__(self, class_weights=None):
                 super().__init__()
-                self.ce = torch.nn.CrossEntropyLoss(reduction='none')
+                self.ce = torch.nn.CrossEntropyLoss(reduction='none', weight=class_weights)
             def forward(self, input, target, mask):
                 loss = self.ce(input, target)
                 masked_loss = loss * mask
                 return masked_loss.sum() / (mask.sum() + 1e-6)
+    
+    class MaskedFocalLoss(torch.nn.Module):
+        """
+        Focal Loss for handling class imbalance by down-weighting easy examples.
+        FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+        """
+        def __init__(self, class_weights=None, gamma=2.0, reduction='mean'):
+            super().__init__()
+            self.gamma = gamma
+            self.class_weights = class_weights
+            self.reduction = reduction
+            
+        def forward(self, input, target, mask):
+            # input: [B, num_classes, T], target: [B, T], mask: [B, T]
+            B, C, T = input.shape
+            
+            # Ensure target is long type and clamp to valid range [0, C-1]
+            target = target.long()
+            target = torch.clamp(target, 0, C - 1)
+            
+            # Reshape for cross_entropy: input [B*T, C], target [B*T]
+            input_2d = input.permute(0, 2, 1).contiguous().view(-1, C)  # [B*T, C]
+            target_1d = target.contiguous().view(-1)  # [B*T]
+            
+            # Compute cross entropy with class weights
+            if self.class_weights is not None:
+                # Ensure class weights are on the same device as input
+                class_weights_device = self.class_weights.to(input.device)
+                ce_loss = F.cross_entropy(input_2d, target_1d, reduction='none', weight=class_weights_device)
+            else:
+                ce_loss = F.cross_entropy(input_2d, target_1d, reduction='none')
+            
+            # Reshape back to [B, T]
+            ce_loss = ce_loss.view(B, T)
+            
+            # Compute softmax probabilities
+            probs = F.softmax(input, dim=1)  # [B, C, T]
+            
+            # Get probabilities of true class
+            target_one_hot = F.one_hot(target, num_classes=C).permute(0, 2, 1).float()  # [B, C, T]
+            pt = (probs * target_one_hot).sum(dim=1)  # [B, T]
+            
+            # Compute focal term: (1 - p_t)^gamma
+            focal_weight = (1 - pt) ** self.gamma
+            
+            # Apply focal weight and mask
+            focal_loss = focal_weight * ce_loss * mask
+            
+            return focal_loss.sum() / (mask.sum() + 1e-6)
 
     class CumulativeOrdinalLoss(torch.nn.Module):
-        def __init__(self):
+        def __init__(self, class_weights=None):
             super().__init__()
             self.bce = torch.nn.BCEWithLogitsLoss(reduction='none')
+            self.class_weights = class_weights
 
         def forward(self, logits, labels, mask):
             B, K, T = logits.shape
@@ -250,44 +340,53 @@ def main():
                 labels_bin[:, k, :] = (labels >= (k + 1)).float()
             loss = self.bce(logits, labels_bin)
             loss = loss * mask.unsqueeze(1)
+            
+            # Apply class weights if provided
+            if self.class_weights is not None:
+                # Create weight tensor based on true labels
+                sample_weights = torch.ones_like(mask)
+                for c in range(len(self.class_weights)):
+                    sample_weights[labels == c] = self.class_weights[c]
+                loss = loss * sample_weights.unsqueeze(1)
+            
             return loss.sum() / (mask.sum() * K + 1e-8)
         
     # ------------------ Axis normalization ------------------
-    def normalize_axes(X):
-        """
-        X: [num_samples, 3, num_timesteps]
-        Returns X_rot: rotated axes where:
-        - first axis = main movement (PCA)
-        - second axis = orthogonal
-        - third axis = gravity aligned
-        """
-        X_rot = np.zeros_like(X)
-        for i in range(X.shape[0]):
-            window = X[i].T  # [timesteps, 3]
+    # def normalize_axes(X):
+    #     """
+    #     X: [num_samples, 3, num_timesteps]
+    #     Returns X_rot: rotated axes where:
+    #     - first axis = main movement (PCA)
+    #     - second axis = orthogonal
+    #     - third axis = gravity aligned
+    #     """
+    #     X_rot = np.zeros_like(X)
+    #     for i in range(X.shape[0]):
+    #         window = X[i].T  # [timesteps, 3]
 
-            # 1. Gravity vector
-            g = window.mean(axis=0)
-            g = g / (np.linalg.norm(g) + 1e-8)
+    #         # 1. Gravity vector
+    #         g = window.mean(axis=0)
+    #         g = g / (np.linalg.norm(g) + 1e-8)
 
-            # 2. Remove gravity
-            window_no_g = window - g * np.dot(window, g[:, None])
+    #         # 2. Remove gravity
+    #         window_no_g = window - g * np.dot(window, g[:, None])
 
-            # 3. PCA on remaining movement
-            cov = np.cov(window_no_g, rowvar=False)
-            eigvals, eigvecs = np.linalg.eigh(cov)
-            order = np.argsort(eigvals)[::-1]
-            R = eigvecs[:, order]
+    #         # 3. PCA on remaining movement
+    #         cov = np.cov(window_no_g, rowvar=False)
+    #         eigvals, eigvecs = np.linalg.eigh(cov)
+    #         order = np.argsort(eigvals)[::-1]
+    #         R = eigvecs[:, order]
 
-            # 4. Rotate window
-            X_rot[i] = (window @ R).T
-        return X_rot
+    #         # 4. Rotate window
+    #         X_rot[i] = (window @ R).T
+    #     return X_rot
 
         # ------------------------------
     # GroupKFold subject-wise CV
     # ------------------------------
 
     # --- Axis normalization
-    win_acc_data = normalize_axes(win_acc_data)
+    # win_acc_data = normalize_axes(win_acc_data)
 
     subjects = np.array([str(s) for s in win_subjects.reshape(-1)])
     unique_subjects = np.unique(subjects)
@@ -301,16 +400,16 @@ def main():
     
     # Determine number of classes and loss type based on configuration
     if use_ordinal_loss:
-        num_classes = 4  # Ordinal loss: 4 outputs for 5 levels (0-4)
+        num_classes = 2  # Ordinal loss: 2 outputs for 3 levels (0, 1, 2)
         loss_name = "Ordinal"
         print(f"\n{'='*60}")
-        print(f"Using Cumulative Ordinal Loss with {num_classes} outputs")
+        print(f"Using Cumulative Ordinal Loss with {num_classes} outputs for 3 classes")
         print(f"{'='*60}")
     else:
-        num_classes = 5  # Masked CE: 5 outputs (one per class)
+        num_classes = 3  # Masked CE: 3 outputs (one per class)
         loss_name = "MaskedCE"
         print(f"\n{'='*60}")
-        print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs")
+        print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs for 3 classes")
         print(f"{'='*60}")
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=groups)):
@@ -328,6 +427,40 @@ def main():
         feats_train = window_features[train_idx] if window_features is not None else None
         feats_val = window_features[val_idx] if window_features is not None else None
 
+        # Compute class weights to handle imbalanced data
+        # Only use valid (masked) samples for weight calculation
+        valid_train_labels = y_train[mask_train > 0]
+        unique_classes, class_counts = np.unique(valid_train_labels, return_counts=True)
+        
+        print(f"\n  Class Distribution (valid samples only):")
+        total_samples = len(valid_train_labels)
+        
+        if use_class_weights:
+            # Initialize weights array for all possible classes (0, 1, 2)
+            num_total_classes = 3
+            class_weights_array = np.ones(num_total_classes)
+            
+            # Compute inverse frequency weights for classes that exist
+            class_weights_temp = total_samples / (len(unique_classes) * class_counts)
+            
+            # Assign weights to the correct class indices
+            for cls, weight in zip(unique_classes, class_weights_temp):
+                class_weights_array[int(cls)] = weight
+            
+            # Normalize weights to sum to number of classes for stability
+            class_weights_array = class_weights_array * num_total_classes / class_weights_array.sum()
+            
+            # Convert to tensor
+            class_weights_tensor = torch.tensor(class_weights_array, dtype=torch.float32).to(device)
+            
+            for cls, count in zip(unique_classes, class_counts):
+                weight = class_weights_array[int(cls)]
+                print(f"    Class {int(cls)}: {count:5d} samples ({count/total_samples*100:5.1f}%) → weight: {weight:.3f}")
+        else:
+            class_weights_tensor = None
+            for cls, count in zip(unique_classes, class_counts):
+                print(f"    Class {int(cls)}: {count:5d} samples ({count/total_samples*100:5.1f}%)")
+        
         # Update DataLoaders to include features
         train_loader = DataLoader(
             ChoreaDataset(X_train, y_train, mask_train, features=feats_train),
@@ -339,18 +472,62 @@ def main():
         )
 
         # === Model setup (fresh each fold) ===
-        model = get_sslnet(tag='v1.0.0', pretrained=True,
-                           num_classes=num_classes, model_type='segmentation',
-                           padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
+        # Check if SSL-trained encoder is available
+        ssl_checkpoint_path = os.path.join(SSL_OUTPUT_DIR, 'ssl_model_full_dataset_best.pth')
+        
+        if use_ssl_encoder and os.path.exists(ssl_checkpoint_path):
+            print(f"\n  🔄 Loading SSL-trained encoder from full dataset...")
+            # Create model with fresh weights
+            model = get_sslnet(tag='v1.0.0', pretrained=False,
+                              num_classes=num_classes, model_type='segmentation',
+                              padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
+            
+            # Load SSL-trained feature extractor
+            checkpoint = torch.load(ssl_checkpoint_path, map_location=device)
+            if 'feature_extractor_state_dict' in checkpoint:
+                model.feature_extractor.load_state_dict(checkpoint['feature_extractor_state_dict'])
+                val_acc = checkpoint.get('val_acc', 0) * 100
+                epoch = checkpoint.get('epoch', 'N/A')
+                print(f"  ✓ SSL encoder loaded (Epoch: {epoch}, Val Acc: {val_acc:.2f}%)")
+            else:
+                print(f"  ⚠️  Could not find feature_extractor_state_dict in checkpoint")
+                print(f"  → Using original pretrained weights instead")
+                model = get_sslnet(tag='v1.0.0', pretrained=True,
+                                  num_classes=num_classes, model_type='segmentation',
+                                  padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
+        else:
+            if use_ssl_encoder:
+                print(f"\n  ⚠️  SSL checkpoint not found at {ssl_checkpoint_path}")
+                print(f"  → Using original pretrained weights instead")
+            # Use original pretrained weights
+            model = get_sslnet(tag='v1.0.0', pretrained=True,
+                              num_classes=num_classes, model_type='segmentation',
+                              padding_type='triple_wind', feat_dim=window_features.shape[1] if use_features else 0)
+        
         model.to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         
         # Select loss function based on configuration
+        if class_weights_tensor is not None:
+            print(f"  Class weights tensor: shape={class_weights_tensor.shape}, values={class_weights_tensor}")
+        
         if use_ordinal_loss:
-            criterion = CumulativeOrdinalLoss()
+            criterion = CumulativeOrdinalLoss(class_weights=class_weights_tensor)
+            loss_desc = "Ordinal Loss"
+            if use_class_weights:
+                loss_desc += " with class weights"
+            print(f"  Using {loss_desc}")
         else:
-            criterion = MaskedCrossEntropyLoss()
+            if use_focal_loss:
+                criterion = MaskedFocalLoss(class_weights=class_weights_tensor, gamma=2.0)
+                loss_desc = "Focal Loss (gamma=2.0)"
+            else:
+                criterion = MaskedCrossEntropyLoss(class_weights=class_weights_tensor)
+                loss_desc = "Masked CE Loss"
+            if use_class_weights:
+                loss_desc += " with class weights"
+            print(f"  Using {loss_desc}")
 
         # === Training ===
         model.train()
@@ -390,6 +567,7 @@ def main():
                 # Different prediction methods based on loss type
                 if use_ordinal_loss:
                     # Ordinal loss: use sigmoid and count thresholds
+                    # Flipped direction: P(Y <= k), so prediction = K - count(probs > 0.5)
                     probs = torch.sigmoid(logits)
                     pred = (probs > 0.5).sum(dim=1)
                 else:
@@ -419,7 +597,7 @@ def main():
         fold_results.append((acc, prec, rec, f1))
 
         # === Confusion Matrix ===
-        labels = [0, 1, 2, 3, 4]
+        labels = [0, 1, 2]
         cm = confusion_matrix(y_true, y_pred, labels=labels)
 
         # Add marginals (row and column sums)
@@ -437,17 +615,24 @@ def main():
         disp = ConfusionMatrixDisplay(confusion_matrix=cm_with_margins, display_labels=display_labels)
         disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
 
-        # Add detailed title (including AUC)
-        title_str = (
+        # Add detailed title
+        title_parts = [loss_name]
+        if use_class_weights:
+            title_parts.append("Weighted")
+        if use_focal_loss and not use_ordinal_loss:
+            title_parts.append("Focal")
+        loss_title = " + ".join(title_parts) if len(title_parts) > 1 else title_parts[0]
+        
+        metrics_str = (
             f"Accuracy: {acc:.3f} | "
             f"Precision: {prec:.3f} | "
             f"Recall: {rec:.3f} | "
             f"F1: {f1:.3f}"
         )
-        ax.set_title(f"Confusion Matrix (Chorea 0–4) - {loss_name} Loss\n{title_str}", fontsize=12)
+        ax.set_title(f"Confusion Matrix (3-Class: 0,1,2) - {loss_title}\n{metrics_str}", fontsize=12)
 
         plt.tight_layout()
-        plt.savefig(f"/home/netabiran/hd-chorea-detection/figures_output/segmentation_comparison/conf_matrix_{loss_name}_loss.png")
+        plt.savefig(f"/home/netabiran/hd-chorea-detection/figures_output/segmentation_combined_labels/conf_matrix_no_axis_rotation_with_features_combined_labels_with_training_3_classes_ordinal_weighted_new_trial.png")
         plt.show()
 
 if __name__ == '__main__':

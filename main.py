@@ -26,11 +26,12 @@ from sklearn.model_selection import GroupKFold
 RAW_DATA_AND_LABELS_DIR = '/home/netabiran/data_ready/hd_dataset/lab_geneactive/synced_labeled_data'
 
 preprocessing_mode = False
-use_features = True
-use_ordinal_loss = True  # True: ordinal loss (2 outputs for 3 classes), False: masked cross-entropy (3 outputs)
+use_features = False
+use_ordinal_loss = True  # True: ordinal loss (K-1 outputs for K classes), False: masked cross-entropy (K outputs)
 use_ssl_encoder = False  # True: load SSL-trained encoder if available, False: use original pretrained
 use_class_weights = True  # True: use class weights to handle imbalanced data, False: no weighting
 use_focal_loss = False  # True: use focal loss (only for masked CE), False: standard loss
+use_combined_labels = False  # True: combine labels (0->0, 1,2->1, 3,4->2), False: keep original 5 classes (0-4)
 
 curr_dir = os.getcwd()
 
@@ -169,30 +170,86 @@ def main():
     mid_chorea = mid_chorea[final_mask]
     win_subjects = win_subjects[1:-1:2][final_mask]
 
+    # ============================================================
+    # REMOVE HEALTHY SUBJECTS (subjects with 'CO' in their ID)
+    # ============================================================
+    
+    # Identify healthy subjects (those containing 'CO' in their ID)
+    subjects_str = np.array([str(s) for s in win_subjects])
+    healthy_mask = np.array(['CO' in s for s in subjects_str])
+    hd_mask = ~healthy_mask  # HD patients (not healthy)
+    
+    # Get unique subjects before filtering
+    unique_before = np.unique(subjects_str)
+    healthy_subjects = np.unique(subjects_str[healthy_mask])
+    hd_subjects = np.unique(subjects_str[hd_mask])
+    
+    print(f"\n{'='*60}")
+    print(f"Removing Healthy Subjects (ID contains 'CO'):")
+    print(f"{'='*60}")
+    print(f"Total subjects before filtering: {len(unique_before)}")
+    print(f"Healthy subjects (removed): {len(healthy_subjects)}")
+    if len(healthy_subjects) > 0:
+        print(f"  → {', '.join(healthy_subjects)}")
+    print(f"HD subjects (kept): {len(hd_subjects)}")
+    print(f"  → {', '.join(hd_subjects)}")
+    print(f"\nWindows before filtering: {len(left_wind)}")
+    print(f"Windows removed (healthy): {healthy_mask.sum()}")
+    print(f"Windows kept (HD): {hd_mask.sum()}")
+    print(f"{'='*60}\n")
+    
+    # Apply the filter to keep only HD subjects
+    left_wind = left_wind[hd_mask]
+    mid_wind = mid_wind[hd_mask]
+    right_wind = right_wind[hd_mask]
+    mid_chorea = mid_chorea[hd_mask]
+    win_subjects = win_subjects[hd_mask]
+
     win_chorea = mid_chorea
     
-    # Remap chorea labels to 3 classes: 0->0, 1,2->1, 3,4->2
-    print(f"\n{'='*60}")
-    print(f"Remapping Chorea Labels to 3 Classes:")
-    print(f"{'='*60}")
-    print(f"Original label distribution:")
-    for label in range(5):
-        count = (win_chorea == label).sum()
-        print(f"  Label {label}: {count} samples")
+    # Keep original labels for error analysis
+    win_chorea_original = win_chorea.copy()
     
-    # Apply remapping
-    win_chorea_remapped = win_chorea.copy()
-    win_chorea_remapped[win_chorea == 1] = 1
-    win_chorea_remapped[win_chorea == 2] = 1
-    win_chorea_remapped[win_chorea == 3] = 2
-    win_chorea_remapped[win_chorea == 4] = 2
-    win_chorea = win_chorea_remapped
-    
-    print(f"\nRemapped label distribution:")
-    for label in range(3):
-        count = (win_chorea == label).sum()
-        print(f"  Label {label}: {count} samples")
-    print(f"{'='*60}\n")
+    # Determine number of classes based on configuration
+    if use_combined_labels:
+        # Remap chorea labels to 3 classes: 0->0, 1,2->1, 3,4->2
+        print(f"\n{'='*60}")
+        print(f"Remapping Chorea Labels to 3 Classes:")
+        print(f"{'='*60}")
+        print(f"Original label distribution:")
+        for label in range(5):
+            count = (win_chorea == label).sum()
+            print(f"  Label {label}: {count} samples")
+        
+        # Apply remapping
+        win_chorea_remapped = win_chorea.copy()
+        win_chorea_remapped[win_chorea == 1] = 1
+        win_chorea_remapped[win_chorea == 2] = 1
+        win_chorea_remapped[win_chorea == 3] = 2
+        win_chorea_remapped[win_chorea == 4] = 2
+        win_chorea = win_chorea_remapped
+        
+        print(f"\nRemapped label distribution:")
+        for label in range(3):
+            count = (win_chorea == label).sum()
+            print(f"  Label {label}: {count} samples")
+        print(f"{'='*60}\n")
+        
+        num_label_classes = 3
+        label_list = [0, 1, 2]
+    else:
+        # Keep original 5 classes (0-4)
+        print(f"\n{'='*60}")
+        print(f"Using Original 5 Chorea Labels (0-4):")
+        print(f"{'='*60}")
+        print(f"Label distribution:")
+        for label in range(5):
+            count = (win_chorea == label).sum()
+            print(f"  Label {label}: {count} samples")
+        print(f"{'='*60}\n")
+        
+        num_label_classes = 5
+        label_list = [0, 1, 2, 3, 4]
     
     # Stack windows
     win_acc_data = np.stack([left_wind, mid_wind, right_wind], axis=2).reshape(-1, 3, WINDOW_SIZE * 3)
@@ -398,18 +455,22 @@ def main():
 
     fold_results = []
     
+    # Lists to collect predictions and labels from all folds for aggregated confusion matrix
+    all_folds_y_pred = []
+    all_folds_y_true = []
+    
     # Determine number of classes and loss type based on configuration
     if use_ordinal_loss:
-        num_classes = 2  # Ordinal loss: 2 outputs for 3 levels (0, 1, 2)
+        num_classes = num_label_classes - 1  # Ordinal loss: K-1 outputs for K levels
         loss_name = "Ordinal"
         print(f"\n{'='*60}")
-        print(f"Using Cumulative Ordinal Loss with {num_classes} outputs for 3 classes")
+        print(f"Using Cumulative Ordinal Loss with {num_classes} outputs for {num_label_classes} classes")
         print(f"{'='*60}")
     else:
-        num_classes = 3  # Masked CE: 3 outputs (one per class)
+        num_classes = num_label_classes  # Masked CE: K outputs (one per class)
         loss_name = "MaskedCE"
         print(f"\n{'='*60}")
-        print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs for 3 classes")
+        print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs for {num_label_classes} classes")
         print(f"{'='*60}")
 
     for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=groups)):
@@ -417,6 +478,11 @@ def main():
 
         X_train, y_train = win_acc_data[train_idx], win_chorea[train_idx]
         X_val, y_val = win_acc_data[val_idx], win_chorea[val_idx]
+        
+        # Get validation subjects
+        val_subjects = subjects[val_idx]
+        unique_val_subjects = np.unique(val_subjects)
+        print(f"\nValidation subjects ({len(unique_val_subjects)}): {', '.join(unique_val_subjects)}")
 
         mask_train = (y_train >= 0).astype(float)
         mask_val = (y_val >= 0).astype(float)
@@ -436,8 +502,8 @@ def main():
         total_samples = len(valid_train_labels)
         
         if use_class_weights:
-            # Initialize weights array for all possible classes (0, 1, 2)
-            num_total_classes = 3
+            # Initialize weights array for all possible classes
+            num_total_classes = num_label_classes
             class_weights_array = np.ones(num_total_classes)
             
             # Compute inverse frequency weights for classes that exist
@@ -587,6 +653,14 @@ def main():
 
         y_pred = y_pred[valid_mask]
         y_true = y_true[valid_mask]
+        
+        # Collect predictions and labels for aggregated confusion matrix
+        all_folds_y_pred.append(y_pred)
+        all_folds_y_true.append(y_true)
+        
+        # Get original labels and subjects for error analysis
+        y_true_original = win_chorea_original[val_idx].reshape(-1)[valid_mask.numpy()]
+        val_subjects_per_sample = np.repeat(val_subjects, y_val.shape[1])[valid_mask.numpy()]
 
         acc = accuracy_score(y_true, y_pred)
         prec = precision_score(y_true, y_pred, average='macro', zero_division=0)
@@ -597,23 +671,67 @@ def main():
         fold_results.append((acc, prec, rec, f1))
 
         # === Confusion Matrix ===
-        labels = [0, 1, 2]
+        labels = label_list
         cm = confusion_matrix(y_true, y_pred, labels=labels)
 
-        # Add marginals (row and column sums)
-        cm_with_margins = np.zeros((cm.shape[0] + 1, cm.shape[1] + 1), dtype=int)
-        cm_with_margins[:-1, :-1] = cm
-        cm_with_margins[:-1, -1] = np.sum(cm, axis=1)
-        cm_with_margins[-1, :-1] = np.sum(cm, axis=0)
-        cm_with_margins[-1, -1] = np.sum(cm)
+        # Calculate marginals
+        row_sums = np.sum(cm, axis=1)
+        col_sums = np.sum(cm, axis=0)
+        total_sum = np.sum(cm)
 
-        # Create new display labels with 'Total'
+        # Create display labels with 'Total'
         display_labels = labels + ['Total']
+        n_classes = len(labels)
 
-        # Plot
+        # Plot confusion matrix with separate handling for margins
         fig, ax = plt.subplots(figsize=(8, 8))
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm_with_margins, display_labels=display_labels)
-        disp.plot(ax=ax, cmap='Blues', values_format='d', colorbar=False)
+        
+        # Plot the core confusion matrix (without margins) with colormap
+        im = ax.imshow(cm, interpolation='nearest', cmap='Blues')
+        
+        # Add text annotations for the core matrix
+        thresh = cm.max() / 2.
+        for i in range(n_classes):
+            for j in range(n_classes):
+                ax.text(j, i, format(cm[i, j], 'd'),
+                       ha="center", va="center",
+                       color="white" if cm[i, j] > thresh else "black",
+                       fontsize=12)
+        
+        # Extend axes to accommodate margins
+        ax.set_xlim(-0.5, n_classes + 0.5)
+        ax.set_ylim(n_classes + 0.5, -0.5)
+        
+        # Add gray background rectangles for margin cells
+        for i in range(n_classes):
+            # Right column (row sums)
+            rect = plt.Rectangle((n_classes - 0.5, i - 0.5), 1, 1, 
+                                 facecolor='lightgray', edgecolor='black', linewidth=0.5)
+            ax.add_patch(rect)
+            ax.text(n_classes, i, format(row_sums[i], 'd'),
+                   ha="center", va="center", color="black", fontsize=12)
+            
+            # Bottom row (column sums)
+            rect = plt.Rectangle((i - 0.5, n_classes - 0.5), 1, 1,
+                                 facecolor='lightgray', edgecolor='black', linewidth=0.5)
+            ax.add_patch(rect)
+            ax.text(i, n_classes, format(col_sums[i], 'd'),
+                   ha="center", va="center", color="black", fontsize=12)
+        
+        # Bottom-right corner (total)
+        rect = plt.Rectangle((n_classes - 0.5, n_classes - 0.5), 1, 1,
+                             facecolor='lightgray', edgecolor='black', linewidth=0.5)
+        ax.add_patch(rect)
+        ax.text(n_classes, n_classes, format(total_sum, 'd'),
+               ha="center", va="center", color="black", fontsize=12)
+        
+        # Set ticks and labels
+        ax.set_xticks(np.arange(n_classes + 1))
+        ax.set_yticks(np.arange(n_classes + 1))
+        ax.set_xticklabels(display_labels, fontsize=11)
+        ax.set_yticklabels(display_labels, fontsize=11)
+        ax.set_xlabel('Predicted label', fontsize=12)
+        ax.set_ylabel('True label', fontsize=12)
 
         # Add detailed title
         title_parts = [loss_name]
@@ -632,8 +750,333 @@ def main():
         ax.set_title(f"Confusion Matrix (3-Class: 0,1,2) - {loss_title}\n{metrics_str}", fontsize=12)
 
         plt.tight_layout()
-        plt.savefig(f"/home/netabiran/hd-chorea-detection/figures_output/segmentation_combined_labels/conf_matrix_no_axis_rotation_with_features_combined_labels_with_training_3_classes_ordinal_weighted_new_trial.png")
+        conf_matrix_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/conf_matrix_fold{fold+1}.png"
+        plt.savefig(conf_matrix_path)
         plt.show()
+        
+        # ============================================================
+        # ERROR ANALYSIS
+        # ============================================================
+        
+        print(f"\n{'='*60}")
+        print(f"ERROR ANALYSIS - Fold {fold+1}")
+        print(f"{'='*60}")
+        
+        # 1. Analyze 1→0 errors by original label (only for combined labels mode)
+        # Find cases where model predicted 0 but true label was 1 (remapped)
+        if use_combined_labels:
+            errors_1to0_mask = (y_pred == 0) & (y_true == 1)
+            
+            if errors_1to0_mask.sum() > 0:
+                # Get original labels for these errors
+                original_labels_of_errors = y_true_original[errors_1to0_mask]
+                
+                # Count how many were originally 1 vs 2
+                orig_1_errors = (original_labels_of_errors == 1).sum()
+                orig_2_errors = (original_labels_of_errors == 2).sum()
+                total_errors = errors_1to0_mask.sum()
+                
+                # Calculate total number of original 1s and 2s in validation set
+                total_orig_1 = (y_true_original == 1).sum()
+                total_orig_2 = (y_true_original == 2).sum()
+                
+                # Calculate error rates
+                error_rate_1 = (orig_1_errors / total_orig_1 * 100) if total_orig_1 > 0 else 0
+                error_rate_2 = (orig_2_errors / total_orig_2 * 100) if total_orig_2 > 0 else 0
+                
+                print(f"\n1→0 Error Analysis:")
+                print(f"  Total errors (predicted 0, true 1): {total_errors}")
+                print(f"  Originally label 1: {orig_1_errors} ({orig_1_errors/total_errors*100:.1f}% of errors)")
+                print(f"    → Error rate: {orig_1_errors}/{total_orig_1} = {error_rate_1:.1f}%")
+                print(f"  Originally label 2: {orig_2_errors} ({orig_2_errors/total_errors*100:.1f}% of errors)")
+                print(f"    → Error rate: {orig_2_errors}/{total_orig_2} = {error_rate_2:.1f}%")
+                
+                # Visualize this with dual information
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+                
+                # Left plot: Error counts
+                categories = ['Original\nLabel 1', 'Original\nLabel 2']
+                counts = [orig_1_errors, orig_2_errors]
+                colors = ['#FF6B6B', '#4ECDC4']
+                
+                bars1 = ax1.bar(categories, counts, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
+                
+                # Add count labels on bars
+                for bar, count in zip(bars1, counts):
+                    height = bar.get_height()
+                    ax1.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{count}\n({count/total_errors*100:.1f}%)',
+                            ha='center', va='bottom', fontsize=11)
+                
+                ax1.set_ylabel('Number of Errors', fontsize=12)
+                ax1.set_title(f'Error Counts\n(Total: {total_errors} errors)', 
+                             fontsize=12)
+                ax1.set_ylim(0, max(counts) * 1.25)
+                ax1.grid(axis='y', alpha=0.3, linestyle='--')
+                
+                # Right plot: Error rates
+                error_rates = [error_rate_1, error_rate_2]
+                bars2 = ax2.bar(categories, error_rates, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
+                
+                # Add error rate labels on bars
+                for bar, err_count, total_count, rate in zip(bars2, counts, [total_orig_1, total_orig_2], error_rates):
+                    height = bar.get_height()
+                    ax2.text(bar.get_x() + bar.get_width()/2., height,
+                            f'{rate:.1f}%\n({err_count}/{total_count})',
+                            ha='center', va='bottom', fontsize=11)
+                
+                ax2.set_ylabel('Error Rate (%)', fontsize=12)
+                ax2.set_title(f'Error Rates\n(Errors / Total samples per label)', 
+                             fontsize=12)
+                ax2.set_ylim(0, max(error_rates) * 1.25)
+                ax2.grid(axis='y', alpha=0.3, linestyle='--')
+                ax2.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=2, label='50% threshold')
+                ax2.legend()
+                
+                fig.suptitle(f'Fold {fold+1}: 1→0 Error Analysis by Original Label', 
+                            fontsize=14)
+                
+                plt.tight_layout()
+                error_analysis_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/error_analysis_1to0_fold{fold+1}.png"
+                plt.savefig(error_analysis_path)
+                plt.show()
+                print(f"  Saved error analysis to: {error_analysis_path}")
+        
+        # 2. Per-subject histograms
+        print(f"\n2. Per-Subject Distribution Analysis:")
+        
+        unique_val_subs = np.unique(val_subjects_per_sample)
+        n_subjects = len(unique_val_subs)
+        
+        # Create subplots for each subject
+        n_cols = min(3, n_subjects)
+        n_rows = int(np.ceil(n_subjects / n_cols))
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6*n_cols, 5*n_rows))
+        if n_subjects == 1:
+            axes = np.array([axes])
+        axes = axes.flatten()
+        
+        for idx, subject in enumerate(unique_val_subs):
+            ax = axes[idx]
+            
+            # Get data for this subject
+            subject_mask = val_subjects_per_sample == subject
+            subject_preds = y_pred[subject_mask]
+            subject_true = y_true[subject_mask]
+            
+            # Count predictions and true labels
+            labels_range = label_list
+            pred_counts = [np.sum(subject_preds == i) for i in labels_range]
+            true_counts = [np.sum(subject_true == i) for i in labels_range]
+            
+            x = np.arange(len(labels_range))
+            width = 0.35
+            
+            bars1 = ax.bar(x - width/2, true_counts, width, label='True Labels', 
+                          color='#3498db', alpha=0.8, edgecolor='black')
+            bars2 = ax.bar(x + width/2, pred_counts, width, label='Predictions',
+                          color='#e74c3c', alpha=0.8, edgecolor='black')
+            
+            # Add count labels
+            for bars in [bars1, bars2]:
+                for bar in bars:
+                    height = bar.get_height()
+                    if height > 0:
+                        ax.text(bar.get_x() + bar.get_width()/2., height,
+                               f'{int(height)}',
+                               ha='center', va='bottom', fontsize=10)
+            
+            ax.set_xlabel('Chorea Level', fontsize=11)
+            ax.set_ylabel('Count', fontsize=11)
+            ax.set_title(f'Subject: {subject}', fontsize=12)
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels_range)
+            ax.legend(loc='upper right')
+            ax.grid(axis='y', alpha=0.3, linestyle='--')
+            
+            # Calculate accuracy for this subject
+            subject_acc = accuracy_score(subject_true, subject_preds)
+            ax.text(0.02, 0.98, f'Acc: {subject_acc:.2f}', 
+                   transform=ax.transAxes, va='top', ha='left',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+                   fontsize=10)
+            
+            print(f"  Subject {subject}: {len(subject_true)} samples, Accuracy: {subject_acc:.3f}")
+        
+        # Hide unused subplots
+        for idx in range(n_subjects, len(axes)):
+            axes[idx].axis('off')
+        
+        plt.suptitle(f'Fold {fold+1}: Per-Subject Label Distribution (True vs Predicted)', 
+                    fontsize=14, y=1.00)
+        plt.tight_layout()
+        
+        subject_hist_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/per_subject_distribution_fold{fold+1}.png"
+        plt.savefig(subject_hist_path, bbox_inches='tight')
+        plt.show()
+        print(f"  Saved per-subject histograms to: {subject_hist_path}")
+        
+        print(f"{'='*60}\n")
+
+    # ============================================================
+    # AGGREGATED CONFUSION MATRIX FROM ALL FOLDS
+    # ============================================================
+    
+    print(f"\n{'='*60}")
+    print(f"AGGREGATED RESULTS FROM ALL {n_splits} FOLDS")
+    print(f"{'='*60}")
+    
+    # Concatenate all predictions and labels from all folds
+    all_y_pred = np.concatenate(all_folds_y_pred)
+    all_y_true = np.concatenate(all_folds_y_true)
+    
+    # Calculate overall metrics
+    overall_acc = accuracy_score(all_y_true, all_y_pred)
+    overall_prec = precision_score(all_y_true, all_y_pred, average='macro', zero_division=0)
+    overall_rec = recall_score(all_y_true, all_y_pred, average='macro', zero_division=0)
+    overall_f1 = f1_score(all_y_true, all_y_pred, average='macro', zero_division=0)
+    
+    print(f"\nOverall Metrics (aggregated from all folds):")
+    print(f"  Total samples: {len(all_y_true)}")
+    print(f"  Accuracy:  {overall_acc:.3f}")
+    print(f"  Precision: {overall_prec:.3f}")
+    print(f"  Recall:    {overall_rec:.3f}")
+    print(f"  F1-Score:  {overall_f1:.3f}")
+    
+    # Per-fold summary
+    print(f"\nPer-Fold Results:")
+    print(f"{'-'*60}")
+    print(f"{'Fold':<10} {'Accuracy':>12} {'Precision':>12} {'Recall':>12} {'F1-Score':>12}")
+    print(f"{'-'*60}")
+    
+    fold_results_array = np.array(fold_results)
+    for fold_idx, (acc, prec, rec, f1) in enumerate(fold_results):
+        print(f"{'Fold ' + str(fold_idx+1):<10} {acc:>12.3f} {prec:>12.3f} {rec:>12.3f} {f1:>12.3f}")
+    
+    mean_acc = np.mean(fold_results_array[:, 0])
+    std_acc = np.std(fold_results_array[:, 0])
+    mean_prec = np.mean(fold_results_array[:, 1])
+    std_prec = np.std(fold_results_array[:, 1])
+    mean_rec = np.mean(fold_results_array[:, 2])
+    std_rec = np.std(fold_results_array[:, 2])
+    mean_f1 = np.mean(fold_results_array[:, 3])
+    std_f1 = np.std(fold_results_array[:, 3])
+    
+    print(f"{'-'*60}")
+    print(f"{'Mean':<10} {mean_acc:>12.3f} {mean_prec:>12.3f} {mean_rec:>12.3f} {mean_f1:>12.3f}")
+    print(f"{'Std':<10} {std_acc:>12.3f} {std_prec:>12.3f} {std_rec:>12.3f} {std_f1:>12.3f}")
+    print(f"{'='*60}")
+    
+    # Create aggregated confusion matrix
+    labels = label_list
+    cm_agg = confusion_matrix(all_y_true, all_y_pred, labels=labels)
+    
+    # Calculate marginals
+    row_sums = np.sum(cm_agg, axis=1)
+    col_sums = np.sum(cm_agg, axis=0)
+    total_sum = np.sum(cm_agg)
+    
+    # Create display labels with 'Total'
+    display_labels = labels + ['Total']
+    n_classes = len(labels)
+    
+    # Plot aggregated confusion matrix with separate handling for margins
+    fig, ax = plt.subplots(figsize=(10, 9))
+    
+    # Plot the core confusion matrix (without margins) with colormap
+    im = ax.imshow(cm_agg, interpolation='nearest', cmap='Blues')
+    
+    # Add text annotations for the core matrix
+    thresh = cm_agg.max() / 2.
+    for i in range(n_classes):
+        for j in range(n_classes):
+            ax.text(j, i, format(cm_agg[i, j], 'd'),
+                   ha="center", va="center",
+                   color="white" if cm_agg[i, j] > thresh else "black",
+                   fontsize=12)
+    
+    # Extend axes to accommodate margins
+    ax.set_xlim(-0.5, n_classes + 0.5)
+    ax.set_ylim(n_classes + 0.5, -0.5)
+    
+    # Add gray background rectangles for margin cells
+    for i in range(n_classes):
+        # Right column (row sums)
+        rect = plt.Rectangle((n_classes - 0.5, i - 0.5), 1, 1, 
+                             facecolor='lightgray', edgecolor='black', linewidth=0.5)
+        ax.add_patch(rect)
+        ax.text(n_classes, i, format(row_sums[i], 'd'),
+               ha="center", va="center", color="black", fontsize=12)
+        
+        # Bottom row (column sums)
+        rect = plt.Rectangle((i - 0.5, n_classes - 0.5), 1, 1,
+                             facecolor='lightgray', edgecolor='black', linewidth=0.5)
+        ax.add_patch(rect)
+        ax.text(i, n_classes, format(col_sums[i], 'd'),
+               ha="center", va="center", color="black", fontsize=12)
+    
+    # Bottom-right corner (total)
+    rect = plt.Rectangle((n_classes - 0.5, n_classes - 0.5), 1, 1,
+                         facecolor='lightgray', edgecolor='black', linewidth=0.5)
+    ax.add_patch(rect)
+    ax.text(n_classes, n_classes, format(total_sum, 'd'),
+           ha="center", va="center", color="black", fontsize=12)
+    
+    # Set ticks and labels
+    ax.set_xticks(np.arange(n_classes + 1))
+    ax.set_yticks(np.arange(n_classes + 1))
+    ax.set_xticklabels(display_labels, fontsize=11)
+    ax.set_yticklabels(display_labels, fontsize=11)
+    ax.set_xlabel('Predicted label', fontsize=12)
+    ax.set_ylabel('True label', fontsize=12)
+    
+    # Calculate per-class metrics for display
+    per_class_precision = precision_score(all_y_true, all_y_pred, average=None, labels=labels, zero_division=0)
+    per_class_recall = recall_score(all_y_true, all_y_pred, average=None, labels=labels, zero_division=0)
+    per_class_f1 = f1_score(all_y_true, all_y_pred, average=None, labels=labels, zero_division=0)
+    
+    # Build detailed title
+    title_parts = [loss_name]
+    if use_class_weights:
+        title_parts.append("Weighted")
+    if use_focal_loss and not use_ordinal_loss:
+        title_parts.append("Focal")
+    loss_title = " + ".join(title_parts) if len(title_parts) > 1 else title_parts[0]
+    
+    metrics_str = (
+        f"Accuracy: {overall_acc:.3f} | "
+        f"Precision: {overall_prec:.3f} | "
+        f"Recall: {overall_rec:.3f} | "
+        f"F1: {overall_f1:.3f}"
+    )
+    
+    ax.set_title(f"AGGREGATED Confusion Matrix ({n_splits}-Fold CV) - {loss_title}\n"
+                 f"Total Samples: {len(all_y_true)}\n{metrics_str}", fontsize=12)
+    
+    # Add per-class metrics as text below the matrix
+    class_metrics_text = "Per-Class Metrics:\n"
+    for i, label in enumerate(labels):
+        class_metrics_text += f"  Class {label}: Prec={per_class_precision[i]:.3f}, Rec={per_class_recall[i]:.3f}, F1={per_class_f1[i]:.3f}\n"
+    
+    plt.figtext(0.5, 0.02, class_metrics_text, ha='center', fontsize=10, 
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.subplots_adjust(bottom=0.15)
+    
+    agg_cm_path = "/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/aggregated_confusion_matrix.png"
+    plt.savefig(agg_cm_path, bbox_inches='tight', dpi=150)
+    plt.show()
+    print(f"\nSaved aggregated confusion matrix to: {agg_cm_path}")
+    
+    # Print classification report
+    print(f"\nClassification Report (Aggregated):")
+    print(classification_report(all_y_true, all_y_pred, labels=labels, zero_division=0))
+    
+    print(f"{'='*60}")
+    print(f"Cross-validation complete!")
+    print(f"{'='*60}\n")
 
 if __name__ == '__main__':
     main()

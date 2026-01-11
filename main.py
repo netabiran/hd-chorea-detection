@@ -2,6 +2,9 @@ import preprocessing
 import numpy as np
 import os
 import torch
+import pandas as pd
+import seaborn as sns
+from scipy.stats import spearmanr, pearsonr
 from sslmodel import get_sslnet
 from sklearn.model_selection import train_test_split
 import torch.nn.functional as F
@@ -43,7 +46,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 SSL_OUTPUT_DIR = os.path.join(curr_dir, 'ssl_outputs')
 
-VIZUALIZE_DIR = os.path.join(curr_dir, 'model_outputs', 'results_visualization')
+VIZUALIZE_DIR = "/home/netabiran/hd-chorea-detection/figures_output/new_labels_best_model/"
 os.makedirs(VIZUALIZE_DIR, exist_ok=True)
 
 SRC_SAMPLE_RATE = int(100)
@@ -125,7 +128,7 @@ def main():
             'win_video_time_all_sub': win_video_time_all_sub
         }
 
-        np.savez(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model.npz'), **res)
+        np.savez(os.path.join(PROCESSED_DATA_DIR, f'windows_input_to_multiclass_model_new_subjects.npz'), **res)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # device = "cpu"
@@ -450,8 +453,42 @@ def main():
     unique_subjects.sort()  # Ensure deterministic order
     subject_to_idx = {subj: i for i, subj in enumerate(unique_subjects)}
     groups = np.array([subject_to_idx[s] for s in subjects])
-    n_splits = min(5, len(unique_subjects))
-    gkf = GroupKFold(n_splits=n_splits)
+    
+    # ============================================================
+    # CUSTOM FOLD CONFIGURATION
+    # ============================================================
+    # Define which subjects go into validation set for each fold
+    # Modify this dictionary to control fold assignments
+    # Subjects not listed in any fold will only appear in training sets
+    
+    fold_to_val_subjects = {
+        1: ['IW10GHI', 'IW12GHI', 'IW6GHI', 'IW9TC'],  # Fold 1: these subjects in validation
+        2: ['IW3GHI', 'IW4GHI', 'IW5TC', 'IW9GHI'],  # Fold 2: these subjects in validation
+        3: ['IW10TC', 'IW11GHI', 'IW14GHI'],  # Fold 3: these subjects in validation
+        4: ['IW13GHI', 'IW4TC', 'IW7TC', 'IW7TC', 'IW8TC'],  # Fold 4: these subjects in validation
+        5: ['IW11TC', 'IW15GHI', 'IW5GHI', 'IW6TC'],  # Fold 5: these subjects in validation
+    }
+    
+    # Validate that all specified subjects exist in the data
+    all_specified_subjects = set()
+    for fold_subjects in fold_to_val_subjects.values():
+        all_specified_subjects.update(fold_subjects)
+    
+    missing_subjects = all_specified_subjects - set(unique_subjects)
+    if missing_subjects:
+        print(f"\n⚠️  WARNING: These subjects are specified in fold_to_val_subjects but not found in data:")
+        print(f"    {', '.join(sorted(missing_subjects))}")
+        print(f"    Available subjects: {', '.join(sorted(unique_subjects))}")
+    
+    n_splits = len(fold_to_val_subjects)
+    print(f"\n{'='*60}")
+    print(f"Using CUSTOM Fold Configuration")
+    print(f"Number of folds: {n_splits}")
+    print(f"Available subjects: {', '.join(sorted(unique_subjects))}")
+    print(f"\nFold assignments:")
+    for fold_num, val_subs in fold_to_val_subjects.items():
+        print(f"  Fold {fold_num}: validation = {', '.join(val_subs)}")
+    print(f"{'='*60}\n")
 
     fold_results = []
     
@@ -473,8 +510,19 @@ def main():
         print(f"Using Masked Cross-Entropy Loss with {num_classes} outputs for {num_label_classes} classes")
         print(f"{'='*60}")
 
-    for fold, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, groups=groups)):
-        print(f"\n=== Fold {fold+1}/{n_splits} ===")
+    for fold_num, val_subject_list in fold_to_val_subjects.items():
+        print(f"\n=== Fold {fold_num}/{n_splits} ===")
+        
+        # Create masks for validation and training based on specified subjects
+        val_mask = np.isin(subjects, val_subject_list)
+        train_mask = ~val_mask
+        
+        train_idx = np.where(train_mask)[0]
+        val_idx = np.where(val_mask)[0]
+        
+        if len(val_idx) == 0:
+            print(f"  ⚠️  WARNING: No validation samples found for subjects {val_subject_list}. Skipping fold.")
+            continue
 
         X_train, y_train = win_acc_data[train_idx], win_chorea[train_idx]
         X_val, y_val = win_acc_data[val_idx], win_chorea[val_idx]
@@ -616,6 +664,29 @@ def main():
                 total_loss += loss.item()
             print(f"Epoch {epoch + 1}, Loss: {total_loss / len(train_loader):.4f}")
 
+        # === Save the trained model ===
+        model_save_dir = os.path.join(VIZUALIZE_DIR, 'saved_models')
+        os.makedirs(model_save_dir, exist_ok=True)
+        
+        model_save_path = os.path.join(model_save_dir, f'model_fold{fold_num}.pth')
+        
+        # Save model with metadata for later use
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'fold_num': fold_num,
+            'val_subjects': val_subject_list,
+            'train_subjects': list(set(subjects) - set(val_subject_list)),
+            'num_classes': num_classes,
+            'num_label_classes': num_label_classes,
+            'use_ordinal_loss': use_ordinal_loss,
+            'use_combined_labels': use_combined_labels,
+            'use_features': use_features,
+            'use_class_weights': use_class_weights,
+            'window_size': WINDOW_SIZE,
+        }
+        torch.save(checkpoint, model_save_path)
+        print(f"\n  ✓ Model saved to: {model_save_path}")
+
         # === Evaluation on validation fold ===
         model.eval()
         all_preds, all_labels, all_masks, all_probs = [], [], [], []
@@ -667,8 +738,8 @@ def main():
         rec = recall_score(y_true, y_pred, average='macro', zero_division=0)
         f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
 
-        print(f"Fold {fold+1} → Acc: {acc:.3f}, Prec: {prec:.3f}, Rec: {rec:.3f}, F1: {f1:.3f}")
-        fold_results.append((acc, prec, rec, f1))
+        print(f"Fold {fold_num} → Acc: {acc:.3f}, Prec: {prec:.3f}, Rec: {rec:.3f}, F1: {f1:.3f}")
+        fold_results.append((fold_num, acc, prec, rec, f1))
 
         # === Confusion Matrix ===
         labels = label_list
@@ -750,7 +821,7 @@ def main():
         ax.set_title(f"Confusion Matrix (3-Class: 0,1,2) - {loss_title}\n{metrics_str}", fontsize=12)
 
         plt.tight_layout()
-        conf_matrix_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/conf_matrix_fold{fold+1}.png"
+        conf_matrix_path = VIZUALIZE_DIR + f"conf_matrix_fold{fold_num}.png"
         plt.savefig(conf_matrix_path)
         plt.show()
         
@@ -759,7 +830,7 @@ def main():
         # ============================================================
         
         print(f"\n{'='*60}")
-        print(f"ERROR ANALYSIS - Fold {fold+1}")
+        print(f"ERROR ANALYSIS - Fold {fold_num}")
         print(f"{'='*60}")
         
         # 1. Analyze 1→0 errors by original label (only for combined labels mode)
@@ -833,11 +904,11 @@ def main():
                 ax2.axhline(y=50, color='red', linestyle='--', alpha=0.3, linewidth=2, label='50% threshold')
                 ax2.legend()
                 
-                fig.suptitle(f'Fold {fold+1}: 1→0 Error Analysis by Original Label', 
+                fig.suptitle(f'Fold {fold_num}: 1→0 Error Analysis by Original Label', 
                             fontsize=14)
                 
                 plt.tight_layout()
-                error_analysis_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/error_analysis_1to0_fold{fold+1}.png"
+                error_analysis_path = VIZUALIZE_DIR + f"error_analysis_1to0_fold{fold_num}.png"
                 plt.savefig(error_analysis_path)
                 plt.show()
                 print(f"  Saved error analysis to: {error_analysis_path}")
@@ -908,11 +979,11 @@ def main():
         for idx in range(n_subjects, len(axes)):
             axes[idx].axis('off')
         
-        plt.suptitle(f'Fold {fold+1}: Per-Subject Label Distribution (True vs Predicted)', 
+        plt.suptitle(f'Fold {fold_num}: Per-Subject Label Distribution (True vs Predicted)', 
                     fontsize=14, y=1.00)
         plt.tight_layout()
         
-        subject_hist_path = f"/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/per_subject_distribution_fold{fold+1}.png"
+        subject_hist_path = VIZUALIZE_DIR + f"per_subject_distribution_fold{fold_num}.png"
         plt.savefig(subject_hist_path, bbox_inches='tight')
         plt.show()
         print(f"  Saved per-subject histograms to: {subject_hist_path}")
@@ -950,18 +1021,24 @@ def main():
     print(f"{'Fold':<10} {'Accuracy':>12} {'Precision':>12} {'Recall':>12} {'F1-Score':>12}")
     print(f"{'-'*60}")
     
-    fold_results_array = np.array(fold_results)
-    for fold_idx, (acc, prec, rec, f1) in enumerate(fold_results):
-        print(f"{'Fold ' + str(fold_idx+1):<10} {acc:>12.3f} {prec:>12.3f} {rec:>12.3f} {f1:>12.3f}")
+    # Extract metrics (skip fold_num which is first element)
+    fold_metrics_array = np.array([(acc, prec, rec, f1) for (fold_num, acc, prec, rec, f1) in fold_results])
+    for (fold_num, acc, prec, rec, f1) in fold_results:
+        print(f"{'Fold ' + str(fold_num):<10} {acc:>12.3f} {prec:>12.3f} {rec:>12.3f} {f1:>12.3f}")
     
-    mean_acc = np.mean(fold_results_array[:, 0])
-    std_acc = np.std(fold_results_array[:, 0])
-    mean_prec = np.mean(fold_results_array[:, 1])
-    std_prec = np.std(fold_results_array[:, 1])
-    mean_rec = np.mean(fold_results_array[:, 2])
-    std_rec = np.std(fold_results_array[:, 2])
-    mean_f1 = np.mean(fold_results_array[:, 3])
-    std_f1 = np.std(fold_results_array[:, 3])
+    mean_acc = np.mean(fold_metrics_array[:, 0])
+    std_acc = np.std(fold_metrics_array[:, 0])
+    mean_prec = np.mean(fold_metrics_array[:, 1])
+    std_prec = np.std(fold_metrics_array[:, 1])
+    mean_rec = np.mean(fold_metrics_array[:, 2])
+    std_rec = np.std(fold_metrics_array[:, 2])
+    mean_f1 = np.mean(fold_metrics_array[:, 3])
+    std_f1 = np.std(fold_metrics_array[:, 3])
+    
+    # Identify best fold based on F1 score
+    best_fold_idx = np.argmax(fold_metrics_array[:, 3])  # F1 is at index 3
+    best_fold_num = fold_results[best_fold_idx][0]
+    best_f1 = fold_metrics_array[best_fold_idx, 3]
     
     print(f"{'-'*60}")
     print(f"{'Mean':<10} {mean_acc:>12.3f} {mean_prec:>12.3f} {mean_rec:>12.3f} {mean_f1:>12.3f}")
@@ -1053,6 +1130,7 @@ def main():
     
     ax.set_title(f"AGGREGATED Confusion Matrix ({n_splits}-Fold CV) - {loss_title}\n"
                  f"Total Samples: {len(all_y_true)}\n{metrics_str}", fontsize=12)
+                 
     
     # Add per-class metrics as text below the matrix
     class_metrics_text = "Per-Class Metrics:\n"
@@ -1065,7 +1143,7 @@ def main():
     plt.tight_layout()
     plt.subplots_adjust(bottom=0.15)
     
-    agg_cm_path = "/home/netabiran/hd-chorea-detection/figures_output/new_labels_original/aggregated_confusion_matrix.png"
+    agg_cm_path = VIZUALIZE_DIR + f"aggregated_confusion_matrix.png"
     plt.savefig(agg_cm_path, bbox_inches='tight', dpi=150)
     plt.show()
     print(f"\nSaved aggregated confusion matrix to: {agg_cm_path}")
@@ -1074,6 +1152,53 @@ def main():
     print(f"\nClassification Report (Aggregated):")
     print(classification_report(all_y_true, all_y_pred, labels=labels, zero_division=0))
     
+    # ============================================================
+    # SAVED MODELS SUMMARY
+    # ============================================================
+    model_save_dir = os.path.join(VIZUALIZE_DIR, 'saved_models')
+    print(f"\n{'='*60}")
+    print(f"SAVED MODELS SUMMARY")
+    print(f"{'='*60}")
+    print(f"Models saved to: {model_save_dir}")
+    print(f"\nAvailable models:")
+    for fold_num, val_subs in fold_to_val_subjects.items():
+        model_path = os.path.join(model_save_dir, f'model_fold{fold_num}.pth')
+        if os.path.exists(model_path):
+            print(f"  • model_fold{fold_num}.pth (validation subjects: {', '.join(val_subs)})")
+    
+    print(f"\n🏆 Best model: Fold {best_fold_num} (F1 = {best_f1:.3f})")
+    best_model_path = os.path.join(model_save_dir, f'model_fold{best_fold_num}.pth')
+    print(f"   Path: {best_model_path}")
+    
+    print(f"\n{'─'*60}")
+    print(f"TO LOAD A MODEL FOR VALIDATION ON NEW SUBJECTS:")
+    print(f"{'─'*60}")
+    print(f"""
+# Example code to load and use a saved model:
+
+import torch
+from sslmodel import get_sslnet
+
+# Load the checkpoint
+checkpoint = torch.load('{best_model_path}')
+
+# Recreate the model with same configuration
+model = get_sslnet(
+    tag='v1.0.0', 
+    pretrained=False,
+    num_classes=checkpoint['num_classes'], 
+    model_type='segmentation',
+    padding_type='triple_wind', 
+    feat_dim=0  # Set to feature dimension if use_features=True
+)
+
+# Load the trained weights
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+# Now you can run inference on new data
+# output = model(X_new, features=None)
+""")
     print(f"{'='*60}")
     print(f"Cross-validation complete!")
     print(f"{'='*60}\n")

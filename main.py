@@ -34,7 +34,10 @@ use_ordinal_loss = True  # True: ordinal loss (K-1 outputs for K classes), False
 use_ssl_encoder = False  # True: load SSL-trained encoder if available, False: use original pretrained
 use_class_weights = True  # True: use class weights to handle imbalanced data, False: no weighting
 use_focal_loss = False  # True: use focal loss (only for masked CE), False: standard loss
-use_combined_labels = False  # True: combine labels (0->0, 1,2->1, 3,4->2), False: keep original 5 classes (0-4)
+use_combined_labels = True  # True: combine labels (0->0, 1,2->1, 3,4->2), False: keep original 5 classes (0-4)
+use_random_split = True  # True: random GroupKFold split, False: use predefined fold_to_val_subjects
+random_seed = 42  # Seed for reproducibility when using random split
+n_folds = 5  # Number of folds for random split (only used when use_random_split=True)
 
 curr_dir = os.getcwd()
 
@@ -455,40 +458,74 @@ def main():
     groups = np.array([subject_to_idx[s] for s in subjects])
     
     # ============================================================
-    # CUSTOM FOLD CONFIGURATION
+    # FOLD CONFIGURATION - Random or Custom
     # ============================================================
-    # Define which subjects go into validation set for each fold
-    # Modify this dictionary to control fold assignments
-    # Subjects not listed in any fold will only appear in training sets
     
-    fold_to_val_subjects = {
-        1: ['IW10GHI', 'IW12GHI', 'IW6GHI', 'IW9TC'],  # Fold 1: these subjects in validation
-        2: ['IW3GHI', 'IW4GHI', 'IW5TC', 'IW9GHI'],  # Fold 2: these subjects in validation
-        3: ['IW10TC', 'IW11GHI', 'IW14GHI'],  # Fold 3: these subjects in validation
-        4: ['IW13GHI', 'IW4TC', 'IW7TC', 'IW7TC', 'IW8TC'],  # Fold 4: these subjects in validation
-        5: ['IW11TC', 'IW15GHI', 'IW5GHI', 'IW6TC'],  # Fold 5: these subjects in validation
-    }
-    
-    # Validate that all specified subjects exist in the data
-    all_specified_subjects = set()
-    for fold_subjects in fold_to_val_subjects.values():
-        all_specified_subjects.update(fold_subjects)
-    
-    missing_subjects = all_specified_subjects - set(unique_subjects)
-    if missing_subjects:
-        print(f"\n⚠️  WARNING: These subjects are specified in fold_to_val_subjects but not found in data:")
-        print(f"    {', '.join(sorted(missing_subjects))}")
-        print(f"    Available subjects: {', '.join(sorted(unique_subjects))}")
-    
-    n_splits = len(fold_to_val_subjects)
-    print(f"\n{'='*60}")
-    print(f"Using CUSTOM Fold Configuration")
-    print(f"Number of folds: {n_splits}")
-    print(f"Available subjects: {', '.join(sorted(unique_subjects))}")
-    print(f"\nFold assignments:")
-    for fold_num, val_subs in fold_to_val_subjects.items():
-        print(f"  Fold {fold_num}: validation = {', '.join(val_subs)}")
-    print(f"{'='*60}\n")
+    if use_random_split:
+        # Random GroupKFold split
+        from sklearn.model_selection import GroupKFold
+        
+        np.random.seed(random_seed)
+        
+        # Shuffle subjects before splitting for randomness
+        shuffled_subjects = unique_subjects.copy()
+        np.random.shuffle(shuffled_subjects)
+        
+        # Create a mapping from original subject order to shuffled order
+        subject_to_shuffled_idx = {subj: i for i, subj in enumerate(shuffled_subjects)}
+        shuffled_groups = np.array([subject_to_shuffled_idx[s] for s in subjects])
+        
+        gkf = GroupKFold(n_splits=n_folds)
+        
+        # Generate fold_to_val_subjects from GroupKFold
+        fold_to_val_subjects = {}
+        for fold_num, (train_idx, val_idx) in enumerate(gkf.split(win_acc_data, win_chorea, shuffled_groups), 1):
+            val_subjects_in_fold = np.unique(subjects[val_idx])
+            fold_to_val_subjects[fold_num] = list(val_subjects_in_fold)
+        
+        n_splits = len(fold_to_val_subjects)
+        print(f"\n{'='*60}")
+        print(f"Using RANDOM GroupKFold Split (seed={random_seed})")
+        print(f"Number of folds: {n_splits}")
+        print(f"Available subjects: {', '.join(sorted(unique_subjects))}")
+        print(f"\nRandom fold assignments:")
+        for fold_num, val_subs in fold_to_val_subjects.items():
+            print(f"  Fold {fold_num}: validation = {', '.join(sorted(val_subs))}")
+        print(f"{'='*60}\n")
+    else:
+        # Custom/Manual fold configuration
+        # Define which subjects go into validation set for each fold
+        # Modify this dictionary to control fold assignments
+        # Subjects not listed in any fold will only appear in training sets
+        
+        fold_to_val_subjects = {
+            1: ['IW10GHI', 'IW12GHI', 'IW6GHI', 'IW9TC'],  # Fold 1: these subjects in validation
+            2: ['IW3GHI', 'IW4GHI', 'IW5TC', 'IW9GHI'],  # Fold 2: these subjects in validation
+            3: ['IW10TC', 'IW11GHI', 'IW14GHI'],  # Fold 3: these subjects in validation
+            4: ['IW13GHI', 'IW4TC', 'IW7TC', 'IW8TC'],  # Fold 4: these subjects in validation
+            5: ['IW11TC', 'IW15GHI', 'IW5GHI', 'IW6TC'],  # Fold 5: these subjects in validation
+        } 
+        
+        # Validate that all specified subjects exist in the data
+        all_specified_subjects = set()
+        for fold_subjects in fold_to_val_subjects.values():
+            all_specified_subjects.update(fold_subjects)
+        
+        missing_subjects = all_specified_subjects - set(unique_subjects)
+        if missing_subjects:
+            print(f"\n⚠️  WARNING: These subjects are specified in fold_to_val_subjects but not found in data:")
+            print(f"    {', '.join(sorted(missing_subjects))}")
+            print(f"    Available subjects: {', '.join(sorted(unique_subjects))}")
+        
+        n_splits = len(fold_to_val_subjects)
+        print(f"\n{'='*60}")
+        print(f"Using CUSTOM Fold Configuration")
+        print(f"Number of folds: {n_splits}")
+        print(f"Available subjects: {', '.join(sorted(unique_subjects))}")
+        print(f"\nFold assignments:")
+        for fold_num, val_subs in fold_to_val_subjects.items():
+            print(f"  Fold {fold_num}: validation = {', '.join(val_subs)}")
+        print(f"{'='*60}\n")
 
     fold_results = []
     

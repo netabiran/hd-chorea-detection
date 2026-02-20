@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from model_evaluation import auc_from_probs, compute_auc_from_outputs
 from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
+import pandas as pd
 try:
     import wandb
     WANDB_AVAILABLE = True
@@ -51,7 +52,7 @@ learning_rate = 1e-3  # Initial learning rate
 # ============================================================
 # WEIGHTS & BIASES (WANDB) CONFIGURATION
 # ============================================================
-use_wandb = True  # True: enable wandb logging, False: disable
+use_wandb = False  # True: enable wandb logging, False: disable
 wandb_project = "hd-chorea-detection"  # Wandb project name
 wandb_entity = None  # Wandb entity/team (None for personal account)
 wandb_run_name = "trial_new_script"  # Custom run name (None for auto-generated)
@@ -76,7 +77,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 SSL_OUTPUT_DIR = os.path.join(curr_dir, 'ssl_outputs')
 
-VIZUALIZE_DIR = "/home/netabiran/hd-chorea-detection/figures_output/final_results/trial_new_script/"
+VIZUALIZE_DIR = "/home/netabiran/hd-chorea-detection/figures_output/final_results/trial_new_script_1702/"
 os.makedirs(VIZUALIZE_DIR, exist_ok=True)
 
 SRC_SAMPLE_RATE = int(100)
@@ -1156,6 +1157,87 @@ def evaluate_model(model, val_loader, device):
 
 
 # ============================================================
+# SAVE PREDICTIONS
+# ============================================================
+
+def save_fold_predictions(y_pred, y_true, probs_valid, val_subjects_per_sample, 
+                         fold_num, num_label_classes, val_subject_list):
+    """
+    Save detailed per-sample predictions for a fold to CSV.
+    
+    Args:
+        y_pred: predicted labels
+        y_true: true labels
+        probs_valid: probability matrix [n_samples, n_classes]
+        val_subjects_per_sample: subject ID for each sample
+        fold_num: current fold number
+        num_label_classes: number of classes
+        val_subject_list: list of validation subjects in this fold
+    """
+    # Create predictions directory
+    predictions_dir = os.path.join(VIZUALIZE_DIR, 'predictions')
+    os.makedirs(predictions_dir, exist_ok=True)
+    
+    # Prepare data dictionary
+    data_dict = {
+        'sample_id': np.arange(len(y_pred)),
+        'subject_id': val_subjects_per_sample,
+        'true_label': y_true,
+        'predicted_label': y_pred,
+        'correct': (y_pred == y_true).astype(int)
+    }
+    
+    # Add probability columns for each class
+    for class_idx in range(num_label_classes if not use_ordinal_loss else num_label_classes):
+        if use_ordinal_loss:
+            # For ordinal loss, probs shape is [n_samples, K-1]
+            if class_idx < probs_valid.shape[1]:
+                data_dict[f'prob_threshold_{class_idx+1}'] = probs_valid[:, class_idx]
+        else:
+            # For softmax, probs shape is [n_samples, K]
+            if class_idx < probs_valid.shape[1]:
+                data_dict[f'prob_class_{class_idx}'] = probs_valid[:, class_idx]
+    
+    # Create DataFrame
+    df = pd.DataFrame(data_dict)
+    
+    # Sort by subject_id and sample_id for better readability
+    df = df.sort_values(['subject_id', 'sample_id']).reset_index(drop=True)
+    
+    # Save to CSV
+    csv_path = os.path.join(predictions_dir, f'predictions_fold{fold_num}.csv')
+    df.to_csv(csv_path, index=False, float_format='%.6f')
+    
+    print(f"\n  Saved predictions to: {csv_path}")
+    print(f"  Total samples: {len(df)}")
+    print(f"  Validation subjects: {', '.join(sorted(val_subject_list))}")
+    
+    # Also save a summary per subject
+    summary_data = []
+    for subject in sorted(df['subject_id'].unique()):
+        subject_df = df[df['subject_id'] == subject]
+        summary_data.append({
+            'subject_id': subject,
+            'total_samples': len(subject_df),
+            'correct_predictions': subject_df['correct'].sum(),
+            'accuracy': subject_df['correct'].mean(),
+            'true_label_dist': subject_df['true_label'].value_counts().to_dict(),
+            'pred_label_dist': subject_df['predicted_label'].value_counts().to_dict()
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    summary_path = os.path.join(predictions_dir, f'predictions_summary_fold{fold_num}.csv')
+    
+    # Flatten the distribution dicts for CSV
+    summary_export = summary_df[['subject_id', 'total_samples', 'correct_predictions', 'accuracy']].copy()
+    summary_export.to_csv(summary_path, index=False, float_format='%.6f')
+    
+    print(f"  Saved summary to: {summary_path}")
+    
+    return csv_path, summary_path
+
+
+# ============================================================
 # VISUALIZATION: CONFUSION MATRIX
 # ============================================================
 
@@ -1408,10 +1490,14 @@ def plot_per_subject_distribution(y_pred, y_true, val_subjects_per_sample, fold_
 def compute_and_display_aggregated_results(all_folds_y_pred, all_folds_y_true, all_folds_probs,
                                            fold_results, fold_to_val_subjects,
                                            n_splits, label_list, num_label_classes,
-                                           loss_name, wandb_initialized, max_training_step):
+                                           loss_name, wandb_initialized, max_training_step,
+                                           all_folds_subjects=None):
     """
     Compute and display aggregated metrics from all folds.
     Plot the aggregated confusion matrix and print the classification report.
+    
+    Args:
+        all_folds_subjects: optional list of subject arrays for each fold (for saving predictions)
     """
     print(f"\n{'='*60}")
     print(f"AGGREGATED RESULTS FROM ALL {n_splits} FOLDS")
@@ -1441,6 +1527,14 @@ def compute_and_display_aggregated_results(all_folds_y_pred, all_folds_y_true, a
     print(f"  Recall:    {overall_rec:.3f}")
     print(f"  F1-Score:  {overall_f1:.3f}")
     print(f"  AUC (pooled): {pooled_auc_str}  |  AUC (mean+/-std over folds): {agg_auc_str}")
+
+    # Save aggregated predictions if subject info is provided
+    if all_folds_subjects is not None:
+        _save_aggregated_predictions(
+            all_y_pred, all_y_true, pooled_probs, 
+            np.concatenate(all_folds_subjects),
+            num_label_classes, n_splits
+        )
 
     # Per-fold summary
     print(f"\nPer-Fold Results:")
@@ -1536,6 +1630,76 @@ def compute_and_display_aggregated_results(all_folds_y_pred, all_folds_y_true, a
     if wandb_initialized:
         wandb.finish()
         print("Wandb run completed and synced")
+
+
+def _save_aggregated_predictions(all_y_pred, all_y_true, pooled_probs, 
+                                 all_subjects, num_label_classes, n_splits):
+    """
+    Save aggregated predictions from all folds to CSV.
+    
+    Args:
+        all_y_pred: concatenated predictions from all folds
+        all_y_true: concatenated true labels from all folds
+        pooled_probs: concatenated probabilities from all folds
+        all_subjects: concatenated subject IDs from all folds
+        num_label_classes: number of classes
+        n_splits: number of folds
+    """
+    predictions_dir = os.path.join(VIZUALIZE_DIR, 'predictions')
+    os.makedirs(predictions_dir, exist_ok=True)
+    
+    # Prepare data dictionary
+    data_dict = {
+        'sample_id': np.arange(len(all_y_pred)),
+        'subject_id': all_subjects,
+        'true_label': all_y_true,
+        'predicted_label': all_y_pred,
+        'correct': (all_y_pred == all_y_true).astype(int)
+    }
+    
+    # Add probability columns for each class
+    for class_idx in range(num_label_classes if not use_ordinal_loss else num_label_classes):
+        if use_ordinal_loss:
+            if class_idx < pooled_probs.shape[1]:
+                data_dict[f'prob_threshold_{class_idx+1}'] = pooled_probs[:, class_idx]
+        else:
+            if class_idx < pooled_probs.shape[1]:
+                data_dict[f'prob_class_{class_idx}'] = pooled_probs[:, class_idx]
+    
+    # Create DataFrame
+    df = pd.DataFrame(data_dict)
+    df = df.sort_values(['subject_id', 'sample_id']).reset_index(drop=True)
+    
+    # Save aggregated predictions
+    cv_type = "LOSO" if use_leave_one_out else f"{n_splits}fold"
+    csv_path = os.path.join(predictions_dir, f'predictions_aggregated_all_folds_{cv_type}.csv')
+    df.to_csv(csv_path, index=False, float_format='%.6f')
+    
+    print(f"\n{'='*60}")
+    print(f"SAVED AGGREGATED PREDICTIONS")
+    print(f"{'='*60}")
+    print(f"  File: {csv_path}")
+    print(f"  Total samples: {len(df)}")
+    print(f"  Subjects: {len(df['subject_id'].unique())}")
+    print(f"  Overall accuracy: {df['correct'].mean():.4f}")
+    
+    # Save per-subject summary
+    summary_data = []
+    for subject in sorted(df['subject_id'].unique()):
+        subject_df = df[df['subject_id'] == subject]
+        summary_data.append({
+            'subject_id': subject,
+            'total_samples': len(subject_df),
+            'correct_predictions': subject_df['correct'].sum(),
+            'accuracy': subject_df['correct'].mean()
+        })
+    
+    summary_df = pd.DataFrame(summary_data)
+    summary_path = os.path.join(predictions_dir, f'predictions_summary_all_folds_{cv_type}.csv')
+    summary_df.to_csv(summary_path, index=False, float_format='%.6f')
+    
+    print(f"  Summary: {summary_path}")
+    print(f"{'='*60}\n")
 
 
 def _plot_aggregated_confusion_matrix(all_y_true, all_y_pred, label_list, n_splits, loss_name,
@@ -1765,6 +1929,7 @@ def main():
     all_folds_y_pred = []
     all_folds_y_true = []
     all_folds_probs = []
+    all_folds_subjects = []
     max_training_step = 0
 
     for fold_num, val_subject_list in fold_to_val_subjects.items():
@@ -1819,6 +1984,15 @@ def main():
         # Get original labels and subjects for error analysis
         y_true_original = win_chorea_original[val_idx].reshape(-1)[valid_mask.numpy()]
         val_subjects_per_sample = np.repeat(val_subjects, y_val.shape[1])[valid_mask.numpy()]
+        
+        # Store subjects for aggregated predictions
+        all_folds_subjects.append(val_subjects_per_sample)
+
+        # Save predictions to CSV
+        save_fold_predictions(
+            y_pred, y_true, probs_valid, val_subjects_per_sample,
+            fold_num, num_label_classes, val_subject_list
+        )
 
         # Compute metrics
         acc = accuracy_score(y_true, y_pred)
@@ -1865,7 +2039,8 @@ def main():
         all_folds_y_pred, all_folds_y_true, all_folds_probs,
         fold_results, fold_to_val_subjects,
         n_splits, label_list, num_label_classes,
-        loss_name, wandb_initialized, max_training_step
+        loss_name, wandb_initialized, max_training_step,
+        all_folds_subjects=all_folds_subjects
     )
 
 
